@@ -1,0 +1,696 @@
+# ESPHome Crowpanel 1.28" ESP32-S3
+# Tested with ESPHome 2026.4.5
+
+substitutions:
+  friendly_name: Rotary1.28-inch
+  esphome_version: "2026.4.5"
+
+esphome:
+  name: elecrowrotary128-inch
+  platformio_options:
+    build_flags: "-DBOARD_HAS_PSRAM"
+    board_build.esp-idf.memory_type: qio_opi
+    board_build.flash_mode: dio
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: 800
+    then:
+      - logger.log: "Backlight ON"
+      - output.turn_on: gpio_3_backlight_pwm
+      - delay: 200ms
+      - output.turn_off: power_light
+      - output.turn_on: out1
+      - output.turn_on: out2
+      - delay: 1s
+      - logger.log: "Testing LEDs - should be blue"
+      - light.turn_on:
+          id: status_leds
+          brightness: 25%
+          red: 0
+          green: 0
+          blue: 1
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+    version: recommended
+
+logger:
+  level: DEBUG
+
+api:
+  encryption:
+    key: !secret encryption_key
+  on_client_connected:
+    - logger.log: "HA Connected! Syncing initial button states..."
+    - delay: 1s
+    - script.execute: update_living_room_button
+    - script.execute: update_kitchen_button
+    - script.execute: sync_living_room_brightness
+    - script.execute: sync_kitchen_brightness
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: "6T3RFWEF71"
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+time:
+  - platform: homeassistant
+    id: esptime
+
+globals:
+  - id: heating_on
+    type: bool
+    initial_value: 'false'
+  - id: display_dimmed
+    type: bool
+    initial_value: 'false'
+  - id: current_page
+    type: int
+    initial_value: '0'
+  - id: living_room_brightness
+    type: int
+    initial_value: '50'
+  - id: kitchen_brightness
+    type: int
+    initial_value: '50'
+
+output:
+  - platform: ledc
+    pin:
+      number: GPIO46
+      ignore_strapping_warning: true
+    id: gpio_3_backlight_pwm
+  - platform: gpio
+    id: power_light
+    pin: 
+      number: GPIO40
+      inverted: true
+  - platform: gpio
+    id: out1
+    pin: GPIO1
+  - platform: gpio
+    id: out2
+    pin: GPIO2
+  - platform: gpio
+    id: out4
+    pin: GPIO4
+  - platform: gpio
+    id: out12
+    pin: GPIO12
+
+light:
+  - platform: monochromatic
+    name: "Crowpanel Backlight"
+    output: gpio_3_backlight_pwm
+    id: back_light
+    internal: true
+    restore_mode: ALWAYS_ON
+  - platform: esp32_rmt_led_strip
+    id: status_leds
+    rgb_order: GRB
+    pin: GPIO48
+    num_leds: 5
+    chipset: ws2811
+
+sensor:
+  - platform: rotary_encoder
+    id: knob
+    name: "Encoder"
+    pin_a:
+      number: 45
+      ignore_strapping_warning: true
+      mode:
+        input: true
+        pullup: true
+    pin_b:
+      number: 42
+      mode:
+        input: true
+        pullup: true
+    resolution: 1
+    min_value: -100000
+    max_value: 100000
+    on_clockwise:
+      then:
+        - lambda: |-
+            if (id(current_page) == 0) {
+              int new_brightness = id(living_room_brightness) + 10;
+              if (new_brightness > 100) new_brightness = 100;
+              id(living_room_brightness) = new_brightness;
+            } else {
+              int new_brightness = id(kitchen_brightness) + 10;
+              if (new_brightness > 100) new_brightness = 100;
+              id(kitchen_brightness) = new_brightness;
+            }
+        - if:
+            condition:
+              lambda: "return id(current_page) == 0;"
+            then:
+              - lvgl.arc.update:
+                  id: brightness_arc
+                  value: !lambda "return id(living_room_brightness);"
+              - script.execute: send_brightness
+        - if:
+            condition:
+              lambda: "return id(current_page) == 1;"
+            then:
+              - lvgl.arc.update:
+                  id: kitchen_brightness_arc
+                  value: !lambda "return id(kitchen_brightness);"
+              - script.execute: send_kitchen_brightness
+    on_anticlockwise:
+      then:
+        - lambda: |-
+            if (id(current_page) == 0) {
+              int new_brightness = id(living_room_brightness) - 10;
+              if (new_brightness < 0) new_brightness = 0;
+              id(living_room_brightness) = new_brightness;
+            } else {
+              int new_brightness = id(kitchen_brightness) - 10;
+              if (new_brightness < 0) new_brightness = 0;
+              id(kitchen_brightness) = new_brightness;
+            }
+        - if:
+            condition:
+              lambda: "return id(current_page) == 0;"
+            then:
+              - lvgl.arc.update:
+                  id: brightness_arc
+                  value: !lambda "return id(living_room_brightness);"
+              - script.execute: send_brightness
+        - if:
+            condition:
+              lambda: "return id(current_page) == 1;"
+            then:
+              - lvgl.arc.update:
+                  id: kitchen_brightness_arc
+                  value: !lambda "return id(kitchen_brightness);"
+              - script.execute: send_kitchen_brightness
+  - platform: homeassistant
+    id: current_temperature
+    entity_id: climate.front_room
+    attribute: current_temperature
+  - platform: homeassistant
+    id: ha_living_room_brightness
+    entity_id: sensor.living_room_overall_brightness
+    on_value:
+      then:
+        - lambda: "id(living_room_brightness) = static_cast<int>(x);"
+        - lvgl.arc.update:
+            id: brightness_arc
+            value: !lambda "return id(living_room_brightness);"
+        - lvgl.label.update:
+            id: brightness_label
+            text: !lambda |-
+                char buf[8];
+                snprintf(buf, sizeof(buf), "%d%%", id(living_room_brightness));
+                return std::string(buf);
+  - platform: homeassistant
+    id: ha_kitchen_brightness
+    entity_id: sensor.kitchen_overall_brightness
+    on_value:
+      then:
+        - lambda: "id(kitchen_brightness) = static_cast<int>(x);"
+        - lvgl.arc.update:
+            id: kitchen_brightness_arc
+            value: !lambda "return id(kitchen_brightness);"
+        - lvgl.label.update:
+            id: kitchen_brightness_label
+            text: !lambda |-
+                char buf[8];
+                snprintf(buf, sizeof(buf), "%d%%", id(kitchen_brightness));
+                return std::string(buf);
+text_sensor:
+  - platform: homeassistant
+    id: hvac_action
+    entity_id: climate.front_room
+    attribute: hvac_action
+    on_value:
+      then:
+        - logger.log:
+            level: INFO
+            format: "hvac_action received: '%s'"
+            args: x.c_str()
+        - lambda: |-
+            std::string action = x;
+            ESP_LOGI("knob", "hvac_action lambda fired, value='%s'", action.c_str());
+            if (action == "heat" || action == "heating") {
+              ESP_LOGI("knob", "Setting LEDs to HEAT (yellow)");
+              auto call = id(status_leds).turn_on();
+              call.set_rgb(1.0, 1.0, 0.0);
+              call.set_brightness(0.25);
+              call.perform();
+            } else if (action == "cool" || action == "cooling") {
+              ESP_LOGI("knob", "Setting LEDs to COOL (blue)");
+              auto call = id(status_leds).turn_on();
+              call.set_rgb(0.0, 0.0, 1.0);
+              call.set_brightness(0.25);
+              call.perform();
+            } else if (action == "fan") {
+              ESP_LOGI("knob", "Setting LEDs to FAN (white)");
+              auto call = id(status_leds).turn_on();
+              call.set_rgb(1.0, 1.0, 1.0);
+              call.set_brightness(0.25);
+              call.perform();
+            } else if (action == "idle" || action == "off" || action == "none") {
+              ESP_LOGI("knob", "Setting LEDs to OFF (idle/off/none)");
+              auto call = id(status_leds).turn_off();
+              call.perform();
+            } else {
+              ESP_LOGI("knob", "Setting LEDs to OFF");
+              id(status_leds).turn_off();
+            }
+
+binary_sensor:
+  - platform: gpio
+    pin: 41
+    id: rotary_button
+    on_press:
+      then:
+        - lambda: |-
+            id(current_page) = (id(current_page) + 1) % 2;
+            ESP_LOGI("knob", "Switching to page %d", id(current_page));
+        - if:
+            condition:
+              lambda: "return id(current_page) == 0;"
+            then:
+              - lvgl.page.show: lights_page
+        - if:
+            condition:
+              lambda: "return id(current_page) == 1;"
+            then:
+              - lvgl.page.show: kitchen_page
+        - script.execute: screentime
+  - platform: touchscreen
+    id: touch_wake
+    x_min: 0
+    y_min: 0
+    x_max: 240
+    y_max: 240
+    on_press:
+      then:
+        - if:
+            condition:
+              lambda: "return id(display_dimmed);"
+            then:
+              - light.turn_on: back_light
+              - lambda: "id(display_dimmed) = false;"
+              - script.execute: screentime
+  - platform: homeassistant
+    id: ha_living_room_state
+    entity_id: binary_sensor.living_room_any_lights_on
+    on_state:
+      then:
+        - script.execute: update_living_room_button
+  - platform: homeassistant
+    id: ha_kitchen_state
+    entity_id: binary_sensor.kitchen_any_lights_on
+    on_state:
+      then:
+        - script.execute: update_kitchen_button
+
+script:
+  - id: screentime
+    mode: restart
+    then:
+      - light.turn_on: back_light
+      - lambda: "id(display_dimmed) = false;"
+      - delay: 30s
+      - light.turn_off: back_light
+      - lambda: "id(display_dimmed) = true;"
+  - id: dim_screen
+    then:
+      - light.turn_on:
+          id: back_light
+          brightness: 30%
+  - id: bright_screen
+    then:
+      - light.turn_on:
+          id: back_light
+          brightness: 100%
+  - id: send_brightness
+    mode: restart
+    then:
+      - lvgl.label.update:
+          id: brightness_label
+          text: !lambda |-
+              char buf[8];
+              snprintf(buf, sizeof(buf), "%d%%", id(living_room_brightness));
+              return std::string(buf);
+      - delay: 300ms
+      - logger.log:
+          level: INFO
+          format: "Sending brightness %d to living_room"
+          args: id(living_room_brightness)
+      - homeassistant.service:
+          service: light.turn_on
+          data:
+            area_id: living_room
+            brightness_pct: !lambda "return id(living_room_brightness);"
+  - id: send_kitchen_brightness
+    mode: restart
+    then:
+      - lvgl.label.update:
+          id: kitchen_brightness_label
+          text: !lambda |-
+              char buf[8];
+              snprintf(buf, sizeof(buf), "%d%%", id(kitchen_brightness));
+              return std::string(buf);
+      - delay: 300ms
+      - logger.log:
+          level: INFO
+          format: "Sending brightness %d to kitchen"
+          args: id(kitchen_brightness)
+      - homeassistant.service:
+          service: light.turn_on
+          data:
+            area_id: kitchen
+            brightness_pct: !lambda "return id(kitchen_brightness);"
+  - id: update_living_room_button
+    then:
+      - if:
+          condition:
+            lambda: 'return id(ha_living_room_state).state;'
+          then:
+            - lvgl.button.update:
+                id: living_room_btn
+                bg_color: 0xFFFF00
+            - lvgl.label.update:
+                id: living_room_btn_label
+                text_color: 0x222222
+          else:
+            - lvgl.button.update:
+                id: living_room_btn
+                bg_color: 0x222222
+            - lvgl.label.update:
+                id: living_room_btn_label
+                text_color: 0xFFFF00
+  - id: update_kitchen_button
+    then:
+      - if:
+          condition:
+            lambda: 'return id(ha_kitchen_state).state;'
+          then:
+            - lvgl.button.update:
+                id: kitchen_btn
+                bg_color: 0x00FFFF
+            - lvgl.label.update:
+                id: kitchen_btn_label
+                text_color: 0x222222
+          else:
+            - lvgl.button.update:
+                id: kitchen_btn
+                bg_color: 0x222222
+            - lvgl.label.update:
+                id: kitchen_btn_label
+                text_color: 0x00FFFF
+  - id: sync_living_room_brightness
+    then:
+      - lvgl.arc.update:
+          id: brightness_arc
+          value: !lambda "return id(living_room_brightness);"
+      - lvgl.label.update:
+          id: brightness_label
+          text: !lambda |-
+              char buf[8];
+              snprintf(buf, sizeof(buf), "%d%%", id(living_room_brightness));
+              return std::string(buf);
+  - id: sync_kitchen_brightness
+    then:
+      - lvgl.arc.update:
+          id: kitchen_brightness_arc
+          value: !lambda "return id(kitchen_brightness);"
+      - lvgl.label.update:
+          id: kitchen_brightness_label
+          text: !lambda |-
+              char buf[8];
+              snprintf(buf, sizeof(buf), "%d%%", id(kitchen_brightness));
+              return std::string(buf);
+
+i2c:
+  - id: i2c_touch
+    setup_priority: 400
+    sda: 6
+    scl: 7
+    scan: true
+    frequency: 400kHz
+
+touchscreen:
+  platform: cst816
+  id: touch
+  address: 0x15
+  interrupt_pin: 5
+  reset_pin: 13
+  i2c_id: i2c_touch
+  skip_probe: true
+  # transform:
+  #   mirror_x: false
+  #   mirror_y: true
+  #   swap_xy: true
+
+spi:
+  id: spi_bus
+  mosi_pin: 11
+  clk_pin: 10
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_medium
+    size: 20
+    bpp: 4
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°% "
+
+display:
+  - platform: mipi_spi # ili9xxx
+    id: round_display
+    model: GC9A01A
+    cs_pin: GPIO9
+    dc_pin:
+      number: GPIO3
+      ignore_strapping_warning: true
+    reset_pin: GPIO14
+    invert_colors: true
+    show_test_card: false
+    rotation: 0
+
+lvgl:
+  displays:
+    - round_display
+  default_font: font_medium
+  touchscreens:
+    touchscreen_id: touch
+  pages:
+    - id: lights_page
+      widgets:
+        - obj:
+            height: 240
+            width: 240
+            align: CENTER
+            pad_all: 0
+            border_width: 0
+            bg_color: 0x111827
+            widgets:
+              - label:
+                  text: "LIVING ROOM"
+                  text_color: 0xFFFFFF
+                  align: CENTER
+                  y: -20
+              - label:
+                  id: brightness_label
+                  text: "50%"
+                  text_color: 0xFFFFFF
+                  align: CENTER
+                  y: 10
+              - arc:
+                  id: brightness_arc
+                  x: 20
+                  y: 20
+                  width: 200
+                  height: 200
+                  value: 50
+                  min_value: 0
+                  max_value: 100
+                  start_angle: 135
+                  end_angle: 45
+                  arc_color: 0x404040
+                  arc_width: 20
+                  indicator:
+                    arc_color: 0xFFFF00
+                    arc_width: 20
+                  knob:
+                    bg_color: 0xFFFFFF
+                    radius: 9999
+                    border_width: 3
+                    border_color: 0xFFFF00
+                  adjustable: true
+                  on_value:
+                    then:
+                      - lambda: "id(living_room_brightness) = x;"
+                      - script.execute: send_brightness
+                      - script.execute: screentime
+              - button:
+                  x: 70
+                  y: 190
+                  width: 100
+                  height: 40
+                  radius: 8
+                  border_width: 2
+                  border_color: 0xFFFF00
+                  bg_color: 0x222222
+                  id: living_room_btn
+                  on_click:
+                    then:
+                      - if:
+                          condition:
+                            lambda: "return id(display_dimmed);"
+                          then:
+                            - light.turn_on: back_light
+                            - lambda: "id(display_dimmed) = false;"
+                            - script.execute: screentime
+                          else:
+                            - if:
+                                condition:
+                                  lambda: "return id(ha_living_room_state).state;"
+                                then:
+                                  - homeassistant.service:
+                                      service: light.turn_off
+                                      data:
+                                        area_id: living_room
+                                else:
+                                  - if:
+                                      condition:
+                                        lambda: "return id(living_room_brightness) == 0;"
+                                      then:
+                                        - lambda: "id(living_room_brightness) = 50;"
+                                        - lvgl.arc.update:
+                                            id: brightness_arc
+                                            value: 50
+                                        - lvgl.label.update:
+                                            id: brightness_label
+                                            text: "50%"
+                                  - homeassistant.service:
+                                      service: light.turn_on
+                                      data:
+                                        area_id: living_room
+                                        brightness_pct: !lambda "return id(living_room_brightness);"
+                            - script.execute: screentime
+                  widgets:
+                    - label:
+                        id: living_room_btn_label
+                        text: "ON/OFF"
+                        text_color: 0xFFFF00
+                        text_font: font_medium
+                        align: CENTER
+    - id: kitchen_page
+      widgets:
+        - obj:
+            height: 240
+            width: 240
+            align: CENTER
+            pad_all: 0
+            border_width: 0
+            bg_color: 0x111827
+            widgets:
+              - label:
+                  text: "KITCHEN"
+                  text_color: 0xFFFFFF
+                  align: CENTER
+                  y: -20
+              - label:
+                  id: kitchen_brightness_label
+                  text: "50%"
+                  text_color: 0xFFFFFF
+                  align: CENTER
+                  y: 10
+              - arc:
+                  id: kitchen_brightness_arc
+                  x: 20
+                  y: 20
+                  width: 200
+                  height: 200
+                  value: 50
+                  min_value: 0
+                  max_value: 100
+                  start_angle: 135
+                  end_angle: 45
+                  arc_color: 0x404040
+                  arc_width: 20
+                  indicator:
+                    arc_color: 0x00FFFF
+                    arc_width: 20
+                  knob:
+                    bg_color: 0xFFFFFF
+                    radius: 9999
+                    border_width: 3
+                    border_color: 0x00FFFF
+                  adjustable: true
+                  on_value:
+                    then:
+                      - lambda: "id(kitchen_brightness) = x;"
+                      - script.execute: send_kitchen_brightness
+                      - script.execute: screentime
+              - button:
+                  x: 70
+                  y: 190
+                  width: 100
+                  height: 40
+                  radius: 8
+                  border_width: 2
+                  border_color: 0x00FFFF
+                  bg_color: 0x222222
+                  id: kitchen_btn
+                  on_click:
+                    then:
+                      - if:
+                          condition:
+                            lambda: "return id(display_dimmed);"
+                          then:
+                            - light.turn_on: back_light
+                            - lambda: "id(display_dimmed) = false;"
+                            - script.execute: screentime
+                          else:
+                            - if:
+                                condition:
+                                  lambda: "return id(ha_kitchen_state).state;"
+                                then:
+                                  - homeassistant.service:
+                                      service: light.turn_off
+                                      data:
+                                        area_id: kitchen
+                                else:
+                                  - if:
+                                      condition:
+                                        lambda: "return id(kitchen_brightness) == 0;"
+                                      then:
+                                        - lambda: "id(kitchen_brightness) = 50;"
+                                        - lvgl.arc.update:
+                                            id: kitchen_brightness_arc
+                                            value: 50
+                                        - lvgl.label.update:
+                                            id: kitchen_brightness_label
+                                            text: "50%"
+                                  - homeassistant.service:
+                                      service: light.turn_on
+                                      data:
+                                        area_id: kitchen
+                                        brightness_pct: !lambda "return id(kitchen_brightness);"
+                            - script.execute: screentime
+                  widgets:
+                    - label:
+                        id: kitchen_btn_label
+                        text: "ON/OFF"
+                        text_color: 0x00FFFF
+                        text_font: font_medium
+                        align: CENTER
+captive_portal:
