@@ -12,23 +12,6 @@ esphome:
     board_build.esp-idf.memory_type: qio_opi
     board_build.flash_mode: dio
   friendly_name: ${friendly_name}
-  on_boot:
-    priority: 800
-    then:
-      - logger.log: "Backlight ON"
-      - output.turn_on: gpio_3_backlight_pwm
-      - delay: 200ms
-      - output.turn_off: power_light
-      - output.turn_on: out1
-      - output.turn_on: out2
-      - delay: 1s
-      - logger.log: "Testing LEDs - should be blue"
-      - light.turn_on:
-          id: status_leds
-          brightness: 25%
-          red: 0
-          green: 0
-          blue: 1
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -453,11 +436,7 @@ touchscreen:
   interrupt_pin: 5
   reset_pin: 13
   i2c_id: i2c_touch
-  skip_probe: true
-  # transform:
-  #   mirror_x: false
-  #   mirror_y: true
-  #   swap_xy: true
+  skip_probe: false
 
 spi:
   id: spi_bus
@@ -481,7 +460,6 @@ display:
       ignore_strapping_warning: true
     reset_pin: GPIO14
     invert_colors: true
-    show_test_card: false
     rotation: 0
 
 lvgl:
