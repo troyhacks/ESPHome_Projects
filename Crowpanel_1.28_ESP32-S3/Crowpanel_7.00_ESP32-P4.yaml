@@ -40,6 +40,17 @@ esp_ldo:
   - channel: 4
     voltage: 2.5V
 
+esp32_hosted:
+  variant: esp32c6
+  active_high: true
+  reset_pin: GPIO32
+  cmd_pin: GPIO19
+  clk_pin: GPIO18
+  d0_pin: GPIO14
+  d1_pin: GPIO15
+  d2_pin: GPIO16
+  d3_pin: GPIO17
+
 logger:
   level: DEBUG
   logs:
@@ -1162,9 +1173,6 @@ lvgl:
                         min_value: 0
                         max_value: 100
                         value: 50
-                        bg_color: 0x404040
-                        indicator_color: 0x38BDF8
-                        knob_color: 0xFFFFFF
                         on_value:
                           then:
                             - lambda: "id(media_volume) = x / 100.0;"
