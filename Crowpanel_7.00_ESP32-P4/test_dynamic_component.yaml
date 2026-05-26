@@ -1,0 +1,182 @@
+# Test config for dynamic_entity_discovery component with LVGL
+# This validates LVGL widget creation
+
+substitutions:
+  friendly_name: test-dynamic
+  esphome_version: "2026.4.5"
+
+esphome:
+  name: test-dynamic-discovery
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: 800
+    then:
+      - logger.log: "Backlight ON"
+      - output.turn_on: backlight_pwm
+      - delay: 200ms
+      - output.turn_off: power_light
+      - delay: 500ms
+      - light.turn_on:
+          id: back_light
+          brightness: 1
+      - delay: 2s
+      - logger.log: "Triggering dynamic discovery..."
+      - lambda: 'id(dynamic_discovery).trigger_discovery();'
+
+esp32:
+  variant: esp32p4
+  engineering_sample: true
+  cpu_frequency: 360MHZ
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    advanced:
+      execute_from_psram: true
+      enable_idf_experimental_features: true
+
+psram:
+  speed: 200MHz
+
+esp_ldo:
+  - channel: 3
+    voltage: 2.5V
+  - channel: 4
+    voltage: 2.5V
+
+esp32_hosted:
+  variant: esp32c6
+  active_high: true
+  reset_pin: GPIO32
+  cmd_pin: GPIO19
+  clk_pin: GPIO18
+  d0_pin: GPIO14
+  d1_pin: GPIO15
+  d2_pin: GPIO16
+  d3_pin: GPIO17
+
+logger:
+  hardware_uart: UART0 # alternatively, USB_SERIAL_JTAG
+  level: DEBUG
+  logs:
+    dynamic_entity_discovery: info
+
+api:
+  encryption:
+    key: !secret encryption_key
+  on_client_connected:
+    - logger.log: "HA Connected!"
+    - lambda: 'id(dynamic_discovery).trigger_discovery();'
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: !secret wifi_password
+
+i2c:
+  - id: bus_a
+    sda: GPIO45
+    scl: GPIO46
+    frequency: 400kHz
+
+output:
+  - platform: ledc
+    pin: GPIO31
+    id: backlight_pwm
+  - platform: gpio
+    id: power_light
+    pin: GPIO29
+    inverted: true
+  - platform: gpio
+    id: amp_ctrl
+    pin: GPIO30
+
+light:
+  - platform: monochromatic
+    name: "Backlight"
+    output: backlight_pwm
+    id: back_light
+    restore_mode: ALWAYS_ON
+    internal: true
+
+http_request:
+
+touchscreen:
+  - platform: gt911
+    id: my_touchscreen
+    i2c_id: bus_a
+    reset_pin: GPIO40
+    interrupt_pin: GPIO42
+    update_interval: 50ms
+    transform:
+      swap_xy: false
+      mirror_x: false
+      mirror_y: false
+    on_touch:
+      - logger.log: "Touch detected"
+
+display:
+  - platform: mipi_dsi
+    id: my_display
+    model: WAVESHARE-ESP32-P4-WIFI6-TOUCH-LCD-7B
+    reset_pin:
+      number: GPIO41
+    update_interval: never
+    auto_clear_enabled: false
+    dimensions:
+      width: 1024
+      height: 600
+    color_order: RGB
+    color_depth: 16
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_large
+    size: 28
+    bpp: 4
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°%/<>[]{}|: "
+
+lvgl:
+  displays:
+    - my_display
+  touchscreens:
+    - my_touchscreen
+  buffer_size: 50%
+  byte_order: little_endian
+  color_depth: 16
+  log_level: INFO
+  bg_color: 0x111827
+  text_font: font_large
+  widgets:
+    # Empty - our dynamic_component creates widgets at runtime
+    - obj:
+        id: dynamic_root
+        align: CENTER
+        width: 1024
+        height: 600
+
+dynamic_entity_discovery:
+  id: dynamic_discovery
+  ha_api_url: "http://homeassistant.local:8123"
+  ha_api_password: "test_token_placeholder"
+  include_all: true
+  exclude_areas:
+    - "Guest Bedroom"
+  domains:
+    - light
+  exclude_entities:
+    - "light.fake_light"
+  grid_cols: 3
+  grid_rows: 2
+  grid_card_width: 330
+  grid_card_height: 250
+  grid_gap_x: 7
+  grid_gap_y: 15
+  start_x: 10
+  start_y: 12
+
+captive_portal:
