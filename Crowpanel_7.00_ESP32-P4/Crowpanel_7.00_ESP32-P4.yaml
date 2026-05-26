@@ -53,6 +53,7 @@ esp32_hosted:
 
 logger:
   level: DEBUG
+  baud_rate: 115200
   logs:
     lvgl: info
 
@@ -79,6 +80,24 @@ i2c:
     sda: GPIO45
     scl: GPIO46
     frequency: 400kHz
+
+i2s_audio:
+  - id: i2s_out
+    i2s_lrclk_pin: GPIO21
+    i2s_bclk_pin: GPIO22
+
+speaker:
+  - platform: i2s_audio
+    id: esp32_speaker
+    i2s_audio_id: i2s_out
+    dac_type: external
+    i2s_dout_pin: GPIO23
+
+media_player:
+  - platform: speaker
+    name: "ESP32 Audio"
+    announcement_pipeline:
+      speaker: esp32_speaker
 
 globals:
   - id: display_dimmed
@@ -108,6 +127,24 @@ globals:
   - id: media_volume
     type: float
     initial_value: '0.5'
+  - id: living_room_previous
+    type: int
+    initial_value: '50'
+  - id: kitchen_previous
+    type: int
+    initial_value: '50'
+  - id: bedroom_previous
+    type: int
+    initial_value: '50'
+  - id: bathroom_previous
+    type: int
+    initial_value: '50'
+  - id: office_previous
+    type: int
+    initial_value: '50'
+  - id: garage_previous
+    type: int
+    initial_value: '50'
 
 output:
   - platform: ledc
@@ -117,6 +154,9 @@ output:
     id: power_light
     pin: GPIO29
     inverted: true
+  - platform: gpio
+    id: amp_ctrl
+    pin: GPIO30
 
 light:
   - platform: monochromatic
@@ -127,21 +167,15 @@ light:
     internal: true
 
 sensor:
-  - platform: homeassistant
-    id: ha_living_room_brightness
-    entity_id: sensor.living_room_overall_brightness
+  - platform: wifi_signal
+    id: wifi_rssi_sensor
+    update_interval: 5s
     on_value:
       then:
-        - lambda: "id(living_room_brightness) = static_cast<int>(x);"
-        - lvgl.arc.update:
-            id: living_room_arc
-            value: !lambda "return id(living_room_brightness);"
-        - lvgl.label.update:
-            id: living_room_value
-            text: !lambda |-
-                char buf[8];
-                snprintf(buf, sizeof(buf), "%d%%", id(living_room_brightness));
-                return std::string(buf);
+        - lambda: |-
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%d dBm", (int)x);
+            lv_label_set_text(id(wifi_rssi), buf);
   - platform: homeassistant
     id: ha_kitchen_brightness
     entity_id: sensor.kitchen_overall_brightness
@@ -533,17 +567,17 @@ font:
     id: font_large
     size: 28
     bpp: 4
-    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°% "
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°%/<>[]{}|: "
   - file: "gfonts://Roboto"
     id: font_medium
     size: 20
     bpp: 4
-    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°% "
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°%/<>[]{}|: "
   - file: "gfonts://Roboto"
     id: font_small
     size: 14
     bpp: 4
-    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°% "
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°%/<>[]{}|: "
 
 lvgl:
   displays:
@@ -559,6 +593,7 @@ lvgl:
   pages:
     # Page 1: Room Controls (3x2 grid)
     - id: rooms_page
+      scrollable: false
       widgets:
         - obj:
             height: 600
@@ -568,47 +603,47 @@ lvgl:
             border_width: 0
             bg_color: 0x111827
             widgets:
-              # Row 1
               # Living Room (top-left)
               - obj:
-                  x: 20
-                  y: 20
-                  width: 320
-                  height: 260
+                  x: 10
+                  y: 12
+                  width: 330
+                  height: 250
                   bg_color: 0x1a1a2e
-                  radius: 15
+                  radius: 12
                   border_width: 2
                   border_color: 0xFFFF00
+                  scrollable: false
                   widgets:
                     - label:
                         text: "LIVING ROOM"
                         text_color: 0xFFFFFF
-                        text_font: font_medium
+                        text_font: font_small
                         align: CENTER
-                        y: -90
+                        y: -10
                     - label:
                         id: living_room_value
                         text: "50%"
                         text_color: 0xFFFF00
-                        text_font: font_large
+                        text_font: font_medium
                         align: CENTER
-                        y: -30
+                        y: +10
                     - arc:
                         id: living_room_arc
-                        x: 60
-                        y: 20
-                        width: 200
-                        height: 200
+                        align: CENTER
+                        width: 240
+                        height: 240
+                        y: +15
                         value: 50
                         min_value: 0
                         max_value: 100
                         start_angle: 135
                         end_angle: 45
                         arc_color: 0x404040
-                        arc_width: 15
+                        arc_width: 20
                         indicator:
                           arc_color: 0xFFFF00
-                          arc_width: 15
+                          arc_width: 20
                         knob:
                           bg_color: 0xFFFFFF
                           radius: 9999
@@ -617,15 +652,15 @@ lvgl:
                         adjustable: true
                         on_value:
                           then:
-                            - lambda: "id(living_room_brightness) = x;"
+                            - lambda: "id(living_room_brightness) = x; if (x > 0) id(living_room_previous) = x;"
                             - script.execute: send_living_room
                             - script.execute: screentime
                     - button:
-                        x: 85
-                        y: 185
-                        width: 150
-                        height: 50
-                        radius: 8
+                        align: CENTER
+                        y: +60
+                        width: 120
+                        height: 35
+                        radius: 6
                         border_width: 2
                         border_color: 0xFFFF00
                         bg_color: 0x222222
@@ -642,6 +677,10 @@ lvgl:
                                       data:
                                         area_id: living_room
                                 else:
+                                  - lambda: |-
+                                      if (id(living_room_brightness) == 0) {
+                                        id(living_room_brightness) = id(living_room_previous) > 0 ? id(living_room_previous) : 10;
+                                      }
                                   - homeassistant.service:
                                       service: light.turn_on
                                       data:
@@ -652,48 +691,49 @@ lvgl:
                               id: living_room_btn_label
                               text: "ON/OFF"
                               text_color: 0xFFFF00
-                              text_font: font_medium
+                              text_font: font_small
                               align: CENTER
               # Kitchen (top-center)
               - obj:
-                  x: 352
-                  y: 20
-                  width: 320
-                  height: 260
+                  x: 347
+                  y: 12
+                  width: 330
+                  height: 250
                   bg_color: 0x1a1a2e
-                  radius: 15
+                  radius: 12
                   border_width: 2
                   border_color: 0x00FFFF
+                  scrollable: false
                   widgets:
                     - label:
                         text: "KITCHEN"
                         text_color: 0xFFFFFF
-                        text_font: font_medium
+                        text_font: font_small
                         align: CENTER
-                        y: -90
+                        y: -10
                     - label:
                         id: kitchen_value
                         text: "50%"
                         text_color: 0x00FFFF
-                        text_font: font_large
+                        text_font: font_medium
                         align: CENTER
-                        y: -30
+                        y: +10
                     - arc:
                         id: kitchen_arc
-                        x: 60
-                        y: 20
-                        width: 200
-                        height: 200
+                        align: CENTER
+                        width: 240
+                        height: 240
+                        y: +15
                         value: 50
                         min_value: 0
                         max_value: 100
                         start_angle: 135
                         end_angle: 45
                         arc_color: 0x404040
-                        arc_width: 15
+                        arc_width: 20
                         indicator:
                           arc_color: 0x00FFFF
-                          arc_width: 15
+                          arc_width: 20
                         knob:
                           bg_color: 0xFFFFFF
                           radius: 9999
@@ -702,15 +742,15 @@ lvgl:
                         adjustable: true
                         on_value:
                           then:
-                            - lambda: "id(kitchen_brightness) = x;"
+                            - lambda: "id(kitchen_brightness) = x; if (x > 0) id(kitchen_previous) = x;"
                             - script.execute: send_kitchen
                             - script.execute: screentime
                     - button:
-                        x: 85
-                        y: 185
-                        width: 150
-                        height: 50
-                        radius: 8
+                        align: CENTER
+                        y: +60
+                        width: 120
+                        height: 35
+                        radius: 6
                         border_width: 2
                         border_color: 0x00FFFF
                         bg_color: 0x222222
@@ -727,6 +767,10 @@ lvgl:
                                       data:
                                         area_id: kitchen
                                 else:
+                                  - lambda: |-
+                                      if (id(kitchen_brightness) == 0) {
+                                        id(kitchen_brightness) = id(kitchen_previous) > 0 ? id(kitchen_previous) : 10;
+                                      }
                                   - homeassistant.service:
                                       service: light.turn_on
                                       data:
@@ -737,48 +781,49 @@ lvgl:
                               id: kitchen_btn_label
                               text: "ON/OFF"
                               text_color: 0x00FFFF
-                              text_font: font_medium
+                              text_font: font_small
                               align: CENTER
               # Bedroom (top-right)
               - obj:
                   x: 684
-                  y: 20
-                  width: 320
-                  height: 260
+                  y: 12
+                  width: 330
+                  height: 250
                   bg_color: 0x1a1a2e
-                  radius: 15
+                  radius: 12
                   border_width: 2
                   border_color: 0xFF00FF
+                  scrollable: false
                   widgets:
                     - label:
                         text: "BEDROOM"
                         text_color: 0xFFFFFF
-                        text_font: font_medium
+                        text_font: font_small
                         align: CENTER
-                        y: -90
+                        y: -10
                     - label:
                         id: bedroom_value
                         text: "50%"
                         text_color: 0xFF00FF
-                        text_font: font_large
+                        text_font: font_medium
                         align: CENTER
-                        y: -30
+                        y: +10
                     - arc:
                         id: bedroom_arc
-                        x: 60
-                        y: 20
-                        width: 200
-                        height: 200
+                        align: CENTER
+                        width: 240
+                        height: 240
+                        y: +15
                         value: 50
                         min_value: 0
                         max_value: 100
                         start_angle: 135
                         end_angle: 45
                         arc_color: 0x404040
-                        arc_width: 15
+                        arc_width: 20
                         indicator:
                           arc_color: 0xFF00FF
-                          arc_width: 15
+                          arc_width: 20
                         knob:
                           bg_color: 0xFFFFFF
                           radius: 9999
@@ -787,15 +832,15 @@ lvgl:
                         adjustable: true
                         on_value:
                           then:
-                            - lambda: "id(bedroom_brightness) = x;"
+                            - lambda: "id(bedroom_brightness) = x; if (x > 0) id(bedroom_previous) = x;"
                             - script.execute: send_bedroom
                             - script.execute: screentime
                     - button:
-                        x: 85
-                        y: 185
-                        width: 150
-                        height: 50
-                        radius: 8
+                        align: CENTER
+                        y: +60
+                        width: 120
+                        height: 35
+                        radius: 6
                         border_width: 2
                         border_color: 0xFF00FF
                         bg_color: 0x222222
@@ -812,6 +857,10 @@ lvgl:
                                       data:
                                         area_id: bedroom
                                 else:
+                                  - lambda: |-
+                                      if (id(bedroom_brightness) == 0) {
+                                        id(bedroom_brightness) = id(bedroom_previous) > 0 ? id(bedroom_previous) : 10;
+                                      }
                                   - homeassistant.service:
                                       service: light.turn_on
                                       data:
@@ -822,49 +871,49 @@ lvgl:
                               id: bedroom_btn_label
                               text: "ON/OFF"
                               text_color: 0xFF00FF
-                              text_font: font_medium
+                              text_font: font_small
                               align: CENTER
-              # Row 2
               # Bathroom (bottom-left)
               - obj:
-                  x: 20
-                  y: 320
-                  width: 320
-                  height: 260
+                  x: 10
+                  y: 277
+                  width: 330
+                  height: 250
                   bg_color: 0x1a1a2e
-                  radius: 15
+                  radius: 12
                   border_width: 2
                   border_color: 0x00FF00
+                  scrollable: false
                   widgets:
                     - label:
                         text: "BATHROOM"
                         text_color: 0xFFFFFF
-                        text_font: font_medium
+                        text_font: font_small
                         align: CENTER
-                        y: -90
+                        y: -10
                     - label:
                         id: bathroom_value
                         text: "50%"
                         text_color: 0x00FF00
-                        text_font: font_large
+                        text_font: font_medium
                         align: CENTER
-                        y: -30
+                        y: +10
                     - arc:
                         id: bathroom_arc
-                        x: 60
-                        y: 20
-                        width: 200
-                        height: 200
+                        align: CENTER
+                        width: 240
+                        height: 240
+                        y: +15
                         value: 50
                         min_value: 0
                         max_value: 100
                         start_angle: 135
                         end_angle: 45
                         arc_color: 0x404040
-                        arc_width: 15
+                        arc_width: 20
                         indicator:
                           arc_color: 0x00FF00
-                          arc_width: 15
+                          arc_width: 20
                         knob:
                           bg_color: 0xFFFFFF
                           radius: 9999
@@ -873,15 +922,15 @@ lvgl:
                         adjustable: true
                         on_value:
                           then:
-                            - lambda: "id(bathroom_brightness) = x;"
+                            - lambda: "id(bathroom_brightness) = x; if (x > 0) id(bathroom_previous) = x;"
                             - script.execute: send_bathroom
                             - script.execute: screentime
                     - button:
-                        x: 85
-                        y: 185
-                        width: 150
-                        height: 50
-                        radius: 8
+                        align: CENTER
+                        y: +60
+                        width: 120
+                        height: 35
+                        radius: 6
                         border_width: 2
                         border_color: 0x00FF00
                         bg_color: 0x222222
@@ -898,6 +947,10 @@ lvgl:
                                       data:
                                         area_id: bathroom
                                 else:
+                                  - lambda: |-
+                                      if (id(bathroom_brightness) == 0) {
+                                        id(bathroom_brightness) = id(bathroom_previous) > 0 ? id(bathroom_previous) : 10;
+                                      }
                                   - homeassistant.service:
                                       service: light.turn_on
                                       data:
@@ -908,48 +961,49 @@ lvgl:
                               id: bathroom_btn_label
                               text: "ON/OFF"
                               text_color: 0x00FF00
-                              text_font: font_medium
+                              text_font: font_small
                               align: CENTER
               # Office (bottom-center)
               - obj:
-                  x: 352
-                  y: 320
-                  width: 320
-                  height: 260
+                  x: 347
+                  y: 277
+                  width: 330
+                  height: 250
                   bg_color: 0x1a1a2e
-                  radius: 15
+                  radius: 12
                   border_width: 2
                   border_color: 0xFF8800
+                  scrollable: false
                   widgets:
                     - label:
                         text: "OFFICE"
                         text_color: 0xFFFFFF
-                        text_font: font_medium
+                        text_font: font_small
                         align: CENTER
-                        y: -90
+                        y: -10
                     - label:
                         id: office_value
                         text: "50%"
                         text_color: 0xFF8800
-                        text_font: font_large
+                        text_font: font_medium
                         align: CENTER
-                        y: -30
+                        y: +10
                     - arc:
                         id: office_arc
-                        x: 60
-                        y: 20
-                        width: 200
-                        height: 200
+                        align: CENTER
+                        width: 240
+                        height: 240
+                        y: +15
                         value: 50
                         min_value: 0
                         max_value: 100
                         start_angle: 135
                         end_angle: 45
                         arc_color: 0x404040
-                        arc_width: 15
+                        arc_width: 20
                         indicator:
                           arc_color: 0xFF8800
-                          arc_width: 15
+                          arc_width: 20
                         knob:
                           bg_color: 0xFFFFFF
                           radius: 9999
@@ -958,15 +1012,15 @@ lvgl:
                         adjustable: true
                         on_value:
                           then:
-                            - lambda: "id(office_brightness) = x;"
+                            - lambda: "id(office_brightness) = x; if (x > 0) id(office_previous) = x;"
                             - script.execute: send_office
                             - script.execute: screentime
                     - button:
-                        x: 85
-                        y: 185
-                        width: 150
-                        height: 50
-                        radius: 8
+                        align: CENTER
+                        y: +60
+                        width: 120
+                        height: 35
+                        radius: 6
                         border_width: 2
                         border_color: 0xFF8800
                         bg_color: 0x222222
@@ -983,6 +1037,10 @@ lvgl:
                                       data:
                                         area_id: office
                                 else:
+                                  - lambda: |-
+                                      if (id(office_brightness) == 0) {
+                                        id(office_brightness) = id(office_previous) > 0 ? id(office_previous) : 10;
+                                      }
                                   - homeassistant.service:
                                       service: light.turn_on
                                       data:
@@ -993,48 +1051,49 @@ lvgl:
                               id: office_btn_label
                               text: "ON/OFF"
                               text_color: 0xFF8800
-                              text_font: font_medium
+                              text_font: font_small
                               align: CENTER
               # Garage (bottom-right)
               - obj:
                   x: 684
-                  y: 320
-                  width: 320
-                  height: 260
+                  y: 277
+                  width: 330
+                  height: 250
                   bg_color: 0x1a1a2e
-                  radius: 15
+                  radius: 12
                   border_width: 2
                   border_color: 0x8800FF
+                  scrollable: false
                   widgets:
                     - label:
                         text: "GARAGE"
                         text_color: 0xFFFFFF
-                        text_font: font_medium
+                        text_font: font_small
                         align: CENTER
-                        y: -90
+                        y: -10
                     - label:
                         id: garage_value
                         text: "50%"
                         text_color: 0x8800FF
-                        text_font: font_large
+                        text_font: font_medium
                         align: CENTER
-                        y: -30
+                        y: +10
                     - arc:
                         id: garage_arc
-                        x: 60
-                        y: 20
-                        width: 200
-                        height: 200
+                        align: CENTER
+                        width: 240
+                        height: 240
+                        y: +15
                         value: 50
                         min_value: 0
                         max_value: 100
                         start_angle: 135
                         end_angle: 45
                         arc_color: 0x404040
-                        arc_width: 15
+                        arc_width: 20
                         indicator:
                           arc_color: 0x8800FF
-                          arc_width: 15
+                          arc_width: 20
                         knob:
                           bg_color: 0xFFFFFF
                           radius: 9999
@@ -1043,15 +1102,15 @@ lvgl:
                         adjustable: true
                         on_value:
                           then:
-                            - lambda: "id(garage_brightness) = x;"
+                            - lambda: "id(garage_brightness) = x; if (x > 0) id(garage_previous) = x;"
                             - script.execute: send_garage
                             - script.execute: screentime
                     - button:
-                        x: 85
-                        y: 185
-                        width: 150
-                        height: 50
-                        radius: 8
+                        align: CENTER
+                        y: +60
+                        width: 120
+                        height: 35
+                        radius: 6
                         border_width: 2
                         border_color: 0x8800FF
                         bg_color: 0x222222
@@ -1068,6 +1127,10 @@ lvgl:
                                       data:
                                         area_id: garage
                                 else:
+                                  - lambda: |-
+                                      if (id(garage_brightness) == 0) {
+                                        id(garage_brightness) = id(garage_previous) > 0 ? id(garage_previous) : 10;
+                                      }
                                   - homeassistant.service:
                                       service: light.turn_on
                                       data:
@@ -1078,12 +1141,12 @@ lvgl:
                               id: garage_btn_label
                               text: "ON/OFF"
                               text_color: 0x8800FF
-                              text_font: font_medium
+                              text_font: font_small
                               align: CENTER
               # Navigation buttons
               - button:
-                  x: 20
-                  y: 545
+                  x: 362
+                  y: 540
                   width: 150
                   height: 40
                   radius: 8
@@ -1095,13 +1158,13 @@ lvgl:
                       - lvgl.page.show: media_page
                   widgets:
                     - label:
-                        text: "MEDIA >"
+                        text: "MEDIA"
                         text_color: 0xFFFFFF
                         text_font: font_small
                         align: CENTER
               - button:
-                  x: 854
-                  y: 545
+                  x: 532
+                  y: 540
                   width: 150
                   height: 40
                   radius: 8
@@ -1113,7 +1176,7 @@ lvgl:
                       - lvgl.page.show: debug_page
                   widgets:
                     - label:
-                        text: "< DEBUG"
+                        text: "DEBUG"
                         text_color: 0xFFFFFF
                         text_font: font_small
                         align: CENTER
@@ -1134,29 +1197,29 @@ lvgl:
                   text_color: 0xFFFFFF
                   text_font: font_large
                   align: CENTER
-                  y: -200
+                  y: -260
               - label:
                   id: media_title
                   text: "--"
                   text_color: 0x38BDF8
                   text_font: font_medium
                   align: CENTER
-                  y: -120
+                  y: -200
               - label:
                   id: media_artist
                   text: "--"
                   text_color: 0x9CA3AF
                   text_font: font_small
                   align: CENTER
-                  y: -70
+                  y: -140
               # Volume slider
               - obj:
-                  x: 262
-                  y: 50
+                  align: CENTER
+                  y: -50
                   width: 500
                   height: 100
                   bg_color: 0x1a1a2e
-                  radius: 15
+                  radius: 0
                   widgets:
                     - label:
                         text: "Volume"
@@ -1166,10 +1229,10 @@ lvgl:
                         y: -25
                     - slider:
                         id: volume_slider
-                        x: 50
-                        y: 10
+                        align: CENTER
+                        y: +5
                         width: 400
-                        height: 40
+                        height: 20
                         min_value: 0
                         max_value: 100
                         value: 50
@@ -1184,29 +1247,9 @@ lvgl:
                                   volume_level: !lambda "return id(media_volume);"
               # Transport controls
               - button:
-                  x: 312
-                  y: 180
-                  width: 100
-                  height: 100
-                  radius: 50
-                  border_width: 3
-                  border_color: 0x38BDF8
-                  bg_color: 0x1a1a2e
-                  on_click:
-                    then:
-                      - homeassistant.service:
-                          service: media_player.media_play_pause
-                          data:
-                            entity_id: media_player.main
-                  widgets:
-                    - label:
-                        text: "PLAY"
-                        text_color: 0x38BDF8
-                        text_font: font_medium
-                        align: CENTER
-              - button:
-                  x: 112
-                  y: 180
+                  align: CENTER
+                  x: -130
+                  y: +60
                   width: 100
                   height: 100
                   radius: 50
@@ -1226,8 +1269,30 @@ lvgl:
                         text_font: font_medium
                         align: CENTER
               - button:
-                  x: 512
-                  y: 180
+                  align: CENTER
+                  y: +60
+                  width: 100
+                  height: 100
+                  radius: 50
+                  border_width: 3
+                  border_color: 0x38BDF8
+                  bg_color: 0x1a1a2e
+                  on_click:
+                    then:
+                      - homeassistant.service:
+                          service: media_player.media_play_pause
+                          data:
+                            entity_id: media_player.main
+                  widgets:
+                    - label:
+                        text: "PLAY"
+                        text_color: 0x38BDF8
+                        text_font: font_medium
+                        align: CENTER
+              - button:
+                  align: CENTER
+                  x: +130
+                  y: +60
                   width: 100
                   height: 100
                   radius: 50
@@ -1246,10 +1311,35 @@ lvgl:
                         text_color: 0x38BDF8
                         text_font: font_medium
                         align: CENTER
-              # Back button
+              # Radio station
               - button:
-                  x: 20
-                  y: 545
+                  align: CENTER
+                  y: +180
+                  width: 200
+                  height: 50
+                  radius: 25
+                  border_width: 2
+                  border_color: 0xFF6B6B
+                  bg_color: 0x1a1a2e
+                  on_click:
+                    then:
+                      - homeassistant.service:
+                          service: media_player.play_media
+                          data:
+                            entity_id: media_player.main
+                          data_template:
+                            media_content_id: "https://0nlineradio.radioho.st/lounge-ibiza-chillout-lounge?ref=rb26"
+                            media_content_type: music
+                  widgets:
+                    - label:
+                        text: "RADIO"
+                        text_color: 0xFF6B6B
+                        text_font: font_medium
+                        align: CENTER
+              # Navigation buttons
+              - button:
+                  x: 362
+                  y: 540
                   width: 150
                   height: 40
                   radius: 8
@@ -1261,7 +1351,25 @@ lvgl:
                       - lvgl.page.show: rooms_page
                   widgets:
                     - label:
-                        text: "< ROOMS"
+                        text: "ROOMS"
+                        text_color: 0xFFFFFF
+                        text_font: font_small
+                        align: CENTER
+              - button:
+                  x: 532
+                  y: 540
+                  width: 150
+                  height: 40
+                  radius: 8
+                  border_width: 2
+                  border_color: 0xFFFFFF
+                  bg_color: 0x222222
+                  on_click:
+                    then:
+                      - lvgl.page.show: debug_page
+                  widgets:
+                    - label:
+                        text: "DEBUG"
                         text_color: 0xFFFFFF
                         text_font: font_small
                         align: CENTER
@@ -1282,11 +1390,12 @@ lvgl:
                   text_color: 0xFFFFFF
                   text_font: font_large
                   align: CENTER
-                  y: -250
-              # WiFi Status
+                  y: -230
+              # WiFi Status (top-left)
               - obj:
-                  x: 50
-                  y: -180
+                  align: CENTER
+                  x: -250
+                  y: -155
                   width: 400
                   height: 100
                   bg_color: 0x1a1a2e
@@ -1305,10 +1414,11 @@ lvgl:
                         text_font: font_medium
                         align: CENTER
                         y: 10
-              # Memory Usage
+              # Memory Usage (top-right)
               - obj:
-                  x: 574
-                  y: -180
+                  align: CENTER
+                  x: +250
+                  y: -155
                   width: 400
                   height: 100
                   bg_color: 0x1a1a2e
@@ -1327,10 +1437,11 @@ lvgl:
                         text_font: font_medium
                         align: CENTER
                         y: 10
-              # Uptime
+              # Uptime (bottom-left)
               - obj:
-                  x: 50
-                  y: -50
+                  align: CENTER
+                  x: -250
+                  y: -25
                   width: 400
                   height: 100
                   bg_color: 0x1a1a2e
@@ -1349,10 +1460,11 @@ lvgl:
                         text_font: font_medium
                         align: CENTER
                         y: 10
-              # ESPHome Version
+              # ESPHome Version (bottom-right)
               - obj:
-                  x: 574
-                  y: -50
+                  align: CENTER
+                  x: +250
+                  y: -25
                   width: 400
                   height: 100
                   bg_color: 0x1a1a2e
@@ -1370,10 +1482,10 @@ lvgl:
                         text_font: font_medium
                         align: CENTER
                         y: 10
-              # Home Assistant Connection
+              # Home Assistant Connection (center)
               - obj:
-                  x: 312
-                  y: 80
+                  align: CENTER
+                  y: +110
                   width: 400
                   height: 100
                   bg_color: 0x1a1a2e
@@ -1392,10 +1504,10 @@ lvgl:
                         text_font: font_medium
                         align: CENTER
                         y: 10
-              # Back button
+              # Navigation buttons
               - button:
-                  x: 854
-                  y: 545
+                  x: 362
+                  y: 540
                   width: 150
                   height: 40
                   radius: 8
@@ -1407,7 +1519,25 @@ lvgl:
                       - lvgl.page.show: rooms_page
                   widgets:
                     - label:
-                        text: "ROOMS >"
+                        text: "ROOMS"
+                        text_color: 0xFFFFFF
+                        text_font: font_small
+                        align: CENTER
+              - button:
+                  x: 532
+                  y: 540
+                  width: 150
+                  height: 40
+                  radius: 8
+                  border_width: 2
+                  border_color: 0xFFFFFF
+                  bg_color: 0x222222
+                  on_click:
+                    then:
+                      - lvgl.page.show: media_page
+                  widgets:
+                    - label:
+                        text: "MEDIA"
                         text_color: 0xFFFFFF
                         text_font: font_small
                         align: CENTER
@@ -1415,12 +1545,6 @@ lvgl:
 interval:
   - interval: 5s
     then:
-      - lambda: |-
-          // Update WiFi RSSI
-          int rssi = WiFi.RSSI();
-          char rssi_buf[20];
-          snprintf(rssi_buf, sizeof(rssi_buf), "%d dBm", rssi);
-          lv_label_set_text(id(wifi_rssi), rssi_buf);
       - lambda: |-
           // Update free memory
           uint32_t free_heap = esp_get_free_heap_size();
