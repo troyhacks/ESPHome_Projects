@@ -73,7 +73,7 @@ wifi:
   password: !secret wifi_password
   ap:
     ssid: "${friendly_name} Fallback"
-    password: "6T3RFWEF71"
+    password: !secret ap_password
 
 i2c:
   - id: bus_a
