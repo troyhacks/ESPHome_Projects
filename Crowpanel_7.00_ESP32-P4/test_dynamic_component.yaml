@@ -56,9 +56,9 @@ esp32_hosted:
 
 logger:
   hardware_uart: UART0 # alternatively, USB_SERIAL_JTAG
-  level: DEBUG
-  logs:
-    dynamic_entity_discovery: info
+  level: ERROR
+  # logs:
+  #   dynamic_entity_discovery: error
 
 api:
   encryption:
@@ -159,6 +159,13 @@ lvgl:
         align: CENTER
         width: 1024
         height: 600
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/troyhacks/esphome-dynamic-entity-discovery
+      ref: master
+    components: [dynamic_entity_discovery]
 
 dynamic_entity_discovery:
   id: dynamic_discovery
