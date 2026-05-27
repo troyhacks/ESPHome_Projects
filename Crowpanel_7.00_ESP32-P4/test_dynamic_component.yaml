@@ -138,14 +138,15 @@ font:
     id: font_large
     size: 28
     bpp: 4
-    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°%/<>[]{}|: "
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°%/<>[]{}|:;!?@#$&*()_+=, "
 
 lvgl:
   displays:
     - my_display
   touchscreens:
     - my_touchscreen
-  buffer_size: 50%
+  buffer_size: 100%
+  full_refresh: true
   byte_order: little_endian
   color_depth: 16
   log_level: INFO
@@ -168,6 +169,9 @@ dynamic_entity_discovery:
     - "Guest Bedroom"
   domains:
     - light
+    - switch
+    - sensor
+    - binary_sensor
   exclude_entities:
     - "light.fake_light"
   grid_cols: 3
