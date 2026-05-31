@@ -1,3 +1,7 @@
 .esphome
 .claude
 secrets.yaml
+managed_components
+build
+dependencies.lock
+components

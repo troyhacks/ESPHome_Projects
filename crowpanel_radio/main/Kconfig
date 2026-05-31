@@ -1,0 +1,11 @@
+menu "Crowpanel Radio"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "MyNetwork"
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default "password"
+
+endmenu

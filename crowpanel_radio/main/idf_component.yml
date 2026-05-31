@@ -1,0 +1,54 @@
+# Crowpanel Radio - ESP-IDF Component Dependencies
+
+dependencies:
+  idf:
+    version: '>=5.5.0'
+
+  # LVGL
+  lvgl/lvgl:
+    version: ^9.5.0
+
+  # ESP-GMF core components (minimal set for audio streaming)
+  espressif/gmf_core:
+    version: ^0.8.4
+
+  espressif/gmf_io:
+    version: ^0.8.1
+
+  espressif/gmf_audio:
+    version: ^0.8.3
+
+  espressif/gmf_misc:
+    version: ^0.8.0
+
+  espressif/gmf_loader:
+    version: ^0.8.3
+
+  # esp_codec_dev is required by gmf_io
+  espressif/esp_codec_dev:
+    version: ^1.5.10
+
+  # Audio codec (required by gmf_audio for decoder)
+  espressif/esp_audio_codec:
+    version: ^2.5.0
+
+  # WiFi remote for ESP32-P4
+  espressif/esp_hosted:
+    version: ^2.12.8
+    rules:
+    - if: target in [esp32p4]
+
+  espressif/esp_wifi_remote:
+    version: ^1.6.0
+    rules:
+    - if: target in [esp32p4]
+
+  espressif/esp_lcd_ek79007:
+    version: ^2.0.2
+
+  espressif/esp_lcd_touch_gt911:
+    version: ^1.2.0
+
+  # Display panel framework (provides esp_lvgl_port and EK79007 MIPI DSI support)
+  espressif/esp32_display_panel:
+    version: ^1.0.4

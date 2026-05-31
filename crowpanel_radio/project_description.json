@@ -1,0 +1,7 @@
+{
+  "project": {
+    "name": "crowpanel-radio",
+    "version": "1.0.0",
+    "description": "Standalone Internet Radio for Crowpanel ESP32-P4 using ESP-IDF"
+  }
+}
