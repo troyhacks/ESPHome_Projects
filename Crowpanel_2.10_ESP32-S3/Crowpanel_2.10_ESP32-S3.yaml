@@ -26,7 +26,6 @@ esphome:
       - delay: 120ms
       - output.turn_on: tp_reset
       - delay: 120ms
-      - output.turn_on: tp_intr
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -85,15 +84,17 @@ globals:
 
 i2c:
   - id: i2c_touch
-    setup_priority: 400
+    setup_priority: -100
     sda: GPIO38
     scl: GPIO39
     scan: true
-    frequency: 400kHz
+    frequency: 100kHz
 
 pcf8574:
   - id: pcf
     address: 0x21
+    i2c_id: i2c_touch
+    setup_priority: -1000
 
 output:
   - platform: ledc
@@ -122,13 +123,6 @@ output:
       mode:
         output: true
       inverted: true
-  - platform: gpio
-    id: tp_intr
-    pin:
-      pcf8574: pcf
-      number: 2
-      mode:
-        output: true
 light:
   - platform: monochromatic
     name: "Crowpanel Backlight"
@@ -209,6 +203,13 @@ sensor:
                   id: kitchen_brightness_arc
                   value: !lambda "return id(kitchen_brightness);"
               - script.execute: send_kitchen_brightness
+  - platform: template
+    id: p5_debug
+    lambda: |-
+      uint8_t val = id(pcf).digital_read(5);
+      ESP_LOGD("p5", "P5 state: %d", val);
+      return (float)val;
+    update_interval: 50ms
   - platform: homeassistant
     id: current_temperature
     entity_id: climate.front_room
@@ -266,8 +267,14 @@ binary_sensor:
       number: 5
       mode:
         input: true
-      inverted: true
+      inverted: false
     id: rotary_button
+    on_state:
+      then:
+        - logger.log:
+            level: INFO
+            format: "Encoder button state changed to: %d"
+            args: id(rotary_button).state
     on_press:
       then:
         - logger.log: "Button pressed!"
@@ -285,6 +292,9 @@ binary_sensor:
             then:
               - lvgl.page.show: kitchen_page
         - script.execute: screentime
+    on_release:
+      then:
+        - logger.log: "Button released!"
   - platform: touchscreen
     id: touch_wake
     touchscreen_id: touch
@@ -400,14 +410,14 @@ script:
                 id: kitchen_btn
                 bg_color: 0x00FFFF
             - lvgl.label.update:
-                id: kitchen_brightness_label
+                id: kitchen_btn_label
                 text_color: 0x222222
           else:
             - lvgl.button.update:
                 id: kitchen_btn
                 bg_color: 0x222222
             - lvgl.label.update:
-                id: kitchen_brightness_label
+                id: kitchen_btn_label
                 text_color: 0x00FFFF
   - id: sync_living_room_brightness
     then:
@@ -441,7 +451,7 @@ font:
     id: font_medium
     size: 32
     bpp: 4
-    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°% "
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°%/<>[]{}|: "
 
 touchscreen:
   platform: cst816
