@@ -3,13 +3,13 @@
 
 substitutions:
   friendly_name: test-dynamic
-  esphome_version: "2026.4.5"
+  esphome_version: "2026.4.5" # pip install esphome==2026.4.5
 
 esphome:
   name: test-dynamic-discovery
   friendly_name: ${friendly_name}
   on_boot:
-    priority: 800
+    priority: -1000
     then:
       - logger.log: "Backlight ON"
       - output.turn_on: backlight_pwm
@@ -19,9 +19,6 @@ esphome:
       - light.turn_on:
           id: back_light
           brightness: 1
-      - delay: 2s
-      - logger.log: "Triggering dynamic discovery..."
-      - lambda: 'id(dynamic_discovery).trigger_discovery();'
 
 esp32:
   variant: esp32p4
@@ -53,10 +50,11 @@ esp32_hosted:
   d1_pin: GPIO15
   d2_pin: GPIO16
   d3_pin: GPIO17
+  sdio_frequency: 10MHz
 
 logger:
   hardware_uart: UART0 # alternatively, USB_SERIAL_JTAG
-  level: ERROR
+  level: INFO
   # logs:
   #   dynamic_entity_discovery: error
 
@@ -65,7 +63,6 @@ api:
     key: !secret encryption_key
   on_client_connected:
     - logger.log: "HA Connected!"
-    - lambda: 'id(dynamic_discovery).trigger_discovery();'
 
 ota:
   - platform: esphome
@@ -75,7 +72,12 @@ wifi:
   password: !secret wifi_password
   ap:
     ssid: "${friendly_name} Fallback"
-    password: !secret wifi_password
+    password: !secret my_ap_password
+  on_connect:
+    then:
+      - delay: 1s
+      - logger.log: "WiFi connected, triggering dynamic discovery..."
+      - lambda: 'id(dynamic_discovery).trigger_discovery();'
 
 i2c:
   - id: bus_a
@@ -104,6 +106,7 @@ light:
     internal: true
 
 http_request:
+  id: ha_http
 
 touchscreen:
   - platform: gt911
@@ -138,7 +141,7 @@ font:
     id: font_large
     size: 28
     bpp: 4
-    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°%/<>[]{}|:;!?@#$&*()_+=, "
+    # glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°%/<>[]{}|:;!?@#$&*()_+=, "
 
 lvgl:
   displays:
@@ -153,7 +156,9 @@ lvgl:
   bg_color: 0x111827
   text_font: font_large
   widgets:
-    # Empty - our dynamic_component creates widgets at runtime
+    # Widgets needed by dynamic_entity_discovery component
+    - arc: {}
+    - label: {}
     - obj:
         id: dynamic_root
         align: CENTER
@@ -162,15 +167,15 @@ lvgl:
 
 external_components:
   - source:
-      type: git
-      url: https://github.com/troyhacks/esphome-dynamic-entity-discovery
-      ref: master
+      type: local
+      path: C:/ESPHome_Projects/esphome_dynamic_entity_discovery/components
     components: [dynamic_entity_discovery]
 
 dynamic_entity_discovery:
   id: dynamic_discovery
   ha_api_url: "http://homeassistant.local:8123"
-  ha_api_password: "test_token_placeholder"
+  ha_api_password: !secret my_ha_api_password
+  http_request_ref: ha_http
   include_all: true
   exclude_areas:
     - "Guest Bedroom"
