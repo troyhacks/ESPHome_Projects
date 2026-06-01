@@ -7,6 +7,7 @@ substitutions:
 
 esphome:
   name: test-dynamic-discovery
+  # build_path: y:/esphome_test-dynamic-discovery
   friendly_name: ${friendly_name}
   on_boot:
     priority: -1000
@@ -159,11 +160,6 @@ lvgl:
     # Widgets needed by dynamic_entity_discovery component
     - arc: {}
     - label: {}
-    - obj:
-        id: dynamic_root
-        align: CENTER
-        width: 1024
-        height: 600
 
 external_components:
   - source:
