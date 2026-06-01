@@ -8,7 +8,7 @@ This project implements a real-time Home Assistant entity browser and controller
 
 ### External Component
 
-- **Location**: `C:/ESPHome_Projects/esphome_dynamic_entity_discovery/components/dynamic_entity_discovery/`
+- **Location**: `C:/Users/troys/ESPHome_Projects/esphome-dynamic-entity-discovery/components/dynamic_entity_discovery/`
 - **Files**:
   - `__init__.py` - ESPHome component configuration and code generation
   - `dynamic_entity_discovery.h` - C++ header with structs and class declaration
@@ -26,7 +26,7 @@ This project implements a real-time Home Assistant entity browser and controller
 external_components:
   - source:
       type: local
-      path: C:/ESPHome_Projects/esphome_dynamic_entity_discovery/components
+      path: C:/Users/troys/ESPHome_Projects/esphome-dynamic-entity-discovery/components
     components: [dynamic_entity_discovery]
 ```
 
@@ -61,7 +61,7 @@ esphome compile test_dynamic_component.yaml
 ### Key Files for External Component
 
 ```text
-esphome_dynamic_entity_discovery/
+esphome-dynamic-entity-discovery/
 └── components/
     └── dynamic_entity_discovery/
         ├── __init__.py           # ESPHome config schema & code gen

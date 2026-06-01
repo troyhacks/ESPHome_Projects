@@ -168,7 +168,7 @@ lvgl:
 external_components:
   - source:
       type: local
-      path: C:/ESPHome_Projects/esphome_dynamic_entity_discovery/components
+      path: C:/Users/troys/ESPHome_Projects/esphome-dynamic-entity-discovery/components
     components: [dynamic_entity_discovery]
 
 dynamic_entity_discovery:
