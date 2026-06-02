@@ -1,4 +1,4 @@
-# Test config for dynamic_entity_discovery component with LVGL
+# Test config for ha_autopanel component with LVGL
 # This validates LVGL widget creation
 
 substitutions:
@@ -26,6 +26,10 @@ esp32:
   engineering_sample: true
   cpu_frequency: 360MHZ
   flash_size: 16MB
+  # Custom partition table reserves 1MB on the 'storage' partition for
+  # LittleFS. ha_autopanel mounts this at /storage and stores the
+  # device config there.
+  partitions: partitions.csv
   framework:
     type: esp-idf
     advanced:
@@ -57,13 +61,27 @@ logger:
   hardware_uart: UART0 # alternatively, USB_SERIAL_JTAG
   level: INFO
   # logs:
-  #   dynamic_entity_discovery: error
+  #   ha_autopanel: error
 
 api:
   encryption:
     key: !secret encryption_key
+  # Required for ha_autopanel to call HA services (light.turn_on/off, switch.toggle)
+  # and subscribe to state_changed events. Without these the C++ component won't link.
+  homeassistant_services: true
+  homeassistant_states: true
   on_client_connected:
     - logger.log: "HA Connected!"
+    # Probe HA's authorization to perform service actions. If the device
+    # isn't allowed (the integration's "Allow Home Assistant actions"
+    # option is off, or the device hasn't been added to HA yet), the
+    # probe times out and the panel shows NOT_AUTHORIZED with a Retry
+    # button. If the probe succeeds, the panel stays in READY.
+    - delay: 1s
+    - lambda: 'id(dynamic_discovery).trigger_auth_probe();'
+    # Subscribe to state changes once the API is fully up.
+    - delay: 1s
+    - lambda: 'id(dynamic_discovery).trigger_subscription();'
 
 ota:
   - platform: esphome
@@ -142,8 +160,7 @@ font:
     id: font_large
     size: 28
     bpp: 4
-    # glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°%/<>[]{}|:;!?@#$&*()_+=, "
-
+    
 lvgl:
   displays:
     - my_display
@@ -164,31 +181,25 @@ lvgl:
 external_components:
   - source:
       type: local
-      path: C:/Users/troys/ESPHome_Projects/esphome-dynamic-entity-discovery/components
-    components: [dynamic_entity_discovery]
+      path: C:/ESPHome_Projects/esphome_dynamic_entity_discovery/components
+    components: [ha_autopanel]
 
-dynamic_entity_discovery:
+ha_autopanel:
   id: dynamic_discovery
+  # ha_api_url and ha_api_password are still required here for now,
+  # but in the no-code vision they will move to LittleFS and be set
+  # via the /autopanel web form. defaults below are empty so the user
+  # doesn't have to hardcode area/entity/domain filters.
   ha_api_url: "http://homeassistant.local:8123"
   ha_api_password: !secret my_ha_api_password
   http_request_ref: ha_http
-  include_all: true
-  exclude_areas:
-    - "Guest Bedroom"
-  domains:
-    - light
-    - switch
-    - sensor
-    - binary_sensor
-  exclude_entities:
-    - "light.fake_light"
-  grid_cols: 3
-  grid_rows: 2
-  grid_card_width: 330
-  grid_card_height: 250
-  grid_gap_x: 7
-  grid_gap_y: 15
+  # Auto-fit square-card layout
+  card_width: 250
+  card_gap: 12
+  screen_width: 1024
+  screen_height: 600
   start_x: 10
   start_y: 12
+  default_on_pct: 30
 
 captive_portal:
