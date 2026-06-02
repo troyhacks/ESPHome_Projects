@@ -33,6 +33,10 @@ This lets the host drive every state of the panel without a physical
 touch - especially useful for verifying the SETUP_REQUIRED /
 AUTH_FAILED / NOT_AUTHORIZED / CONNECTING screens when the
 device's actual HA state wouldn't otherwise produce them.
+
+For web form testing, the script can also hit the device's HTTP
+endpoint directly:
+  python send_cmd.py <port> web
 """
 import sys
 import time
@@ -44,7 +48,14 @@ def main():
     if len(args) < 2:
         print(__doc__)
         sys.exit(1)
-    port = args[0]
+    cmd = args[0]
+    # Special: the "web" subcommand hits the device's HTTP API directly.
+    if cmd == "web":
+        web_test(args[1:])
+        return
+    # Otherwise the first arg is the serial port and the second is the
+    # single-char command to send.
+    port = cmd
     cmd = args[1]
     wait_s = 5.0
     if "--wait" in args:
@@ -84,12 +95,77 @@ def main():
                 # ANSI colour codes from ESPHome's logger. Strip them for
                 # readability and so the output is grep-friendly.
                 clean = text.replace("\x1b[0;32m", "").replace("\x1b[0;33m", "").replace("\x1b[0m", "")
-                print(f"[recv] {clean[:600]}")
+                try:
+                    print(f"[recv] {clean[:600]}")
+                except UnicodeEncodeError:
+                    print(f"[recv] {clean[:600].encode('ascii', 'replace').decode('ascii')}")
                 lines += 1
         else:
             time.sleep(0.05)
     print(f"[send_cmd] received {lines} new lines, done")
     s.close()
+
+
+def web_test(args):
+    """Hit the device's HTTP endpoint for the /autopanel web form.
+
+    Usage:
+      python send_cmd.py web get <ip>             # fetch the setup form
+      python send_cmd.py web save <ip> <url> <token>  # POST a new config
+      python send_cmd.py web find                 # scan the local subnet
+    """
+    import urllib.request
+    import urllib.parse
+    import urllib.error
+
+    if not args or args[0] == "find":
+        # Scan the local /24 for /autopanel
+        # Pick the same /24 as the host
+        import socket
+        hostname = socket.gethostname()
+        local_ip = socket.gethostbyname(hostname)
+        # local_ip is something like 192.168.2.67; use the /24
+        base = ".".join(local_ip.split(".")[:3])
+        print(f"[web] scanning {base}.0/24 for /autopanel...")
+        for last in range(1, 255):
+            ip = f"{base}.{last}"
+            try:
+                req = urllib.request.urlopen(f"http://{ip}/autopanel", timeout=1)
+                if req.status == 200 and "ha_autopanel" in req.read().decode("utf-8", errors="replace"):
+                    print(f"[web] HIT: {ip}")
+            except (urllib.error.URLError, socket.timeout, ConnectionRefusedError):
+                pass
+        return
+
+    if args[0] == "get" and len(args) >= 2:
+        ip = args[1]
+        url = f"http://{ip}/autopanel"
+        print(f"[web] GET {url}")
+        try:
+            req = urllib.request.urlopen(url, timeout=5)
+            print(f"[web] status: {req.status}")
+            body = req.read().decode("utf-8", errors="replace")
+            print(body)
+        except urllib.error.URLError as e:
+            print(f"[web] failed: {e}")
+        return
+
+    if args[0] == "save" and len(args) >= 4:
+        ip, api_url, api_token = args[1], args[2], args[3]
+        url = f"http://{ip}/autopanel/save"
+        print(f"[web] POST {url} api_url={api_url}")
+        data = urllib.parse.urlencode({"api_url": api_url, "api_token": api_token}).encode()
+        try:
+            req = urllib.request.urlopen(url, data=data, timeout=5)
+            print(f"[web] status: {req.status}")
+            body = req.read().decode("utf-8", errors="replace")
+            print(body)
+        except urllib.error.URLError as e:
+            print(f"[web] failed: {e}")
+        return
+
+    print(f"[web] unknown subcommand: {args}")
+    print("  use 'get <ip>', 'save <ip> <url> <token>', or 'find'")
 
 
 if __name__ == "__main__":

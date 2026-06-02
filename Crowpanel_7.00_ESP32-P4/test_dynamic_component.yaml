@@ -26,9 +26,11 @@ esp32:
   engineering_sample: true
   cpu_frequency: 360MHZ
   flash_size: 16MB
-  # Custom partition table reserves 1MB on the 'storage' partition for
-  # LittleFS. ha_autopanel mounts this at /storage and stores the
-  # device config there.
+  # Note: a custom partition table (partitions.csv) reserves 1MB for a
+  # 'storage' partition. ha_autopanel uses NVS (built into ESPHome via
+  # global_preferences) for config storage rather than mounting a
+  # filesystem, because LittleFS isn't in this ESPHome build by default.
+  # If a filesystem is added later, the storage partition is ready.
   partitions: partitions.csv
   framework:
     type: esp-idf
@@ -38,11 +40,6 @@ esp32:
 
 psram:
   speed: 200MHz
-
-# Re-enable the IDF native esp_littlefs component (the C++ component
-# also calls include_builtin_idf_component() for safety).
-idf_components:
-  - name: espressif__esp_littlefs
 
 esp_ldo:
   - channel: 3
@@ -87,6 +84,13 @@ api:
     # Subscribe to state changes once the API is fully up.
     - delay: 1s
     - lambda: 'id(dynamic_discovery).trigger_subscription();'
+
+# Built-in web server provides the underlying HTTP transport. ha_autopanel
+# registers its /autopanel setup form and /autopanel/save POST handler
+# against this base. The panel UI is not served here; it's drawn on
+# the LVGL display.
+web_server:
+  port: 80
 
 ota:
   - platform: esphome
@@ -204,7 +208,7 @@ ha_autopanel:
   screen_width: 1024
   screen_height: 600
   start_x: 10
-  start_y: 12
+  start_y: 40
   default_on_pct: 30
 
 captive_portal:
