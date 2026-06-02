@@ -39,6 +39,11 @@ esp32:
 psram:
   speed: 200MHz
 
+# Re-enable the IDF native esp_littlefs component (the C++ component
+# also calls include_builtin_idf_component() for safety).
+idf_components:
+  - name: espressif__esp_littlefs
+
 esp_ldo:
   - channel: 3
     voltage: 2.5V
