@@ -21,6 +21,11 @@ esphome:
   # errors when the project is heavy on add_idf_component()
   # calls. If that returns, init a git repo in C:/esphome_tdd.
   build_path: C:/esphome_tdd
+  environment_variables:
+    PLATFORMIO_HOME_DIR: "C:/esphome_tdd/.home"
+    PLATFORMIO_PACKAGES_DIR: "C:/esphome_tdd/.packages"
+    PLATFORMIO_CACHE_DIR: "C:/esphome_tdd/.cache"
+    PLATFORMIO_PLATFORMS_DIR: "C:/esphome_tdd/.platforms"
   on_boot:
     priority: -1000
     then:
@@ -244,8 +249,20 @@ ha_autopanel:
   # to match the `id:` in the `time:` block above.
   time_ref: sntp_time
   # Auto-fit square-card layout
+  #
+  # v1.22c (Fix #7): to test the panel UI at a smaller screen size
+  # (e.g. simulating a 4" or 2.8" panel on the same 7" Crowpanel
+  # hardware), edit these three lines:
+  #   - card_width  : shrink to fit one card per row (160 = 4" panel)
+  #   - screen_width: 480 (4") / 320 (2.8") / 240 (1.28")
+  #   - screen_height: 320 / 320 / 240
+  # The flex layout in ha_autopanel auto-reflows cards to the new
+  # width, so no other yaml change is needed. The 1024x600 values
+  # here are the 7" Crowpanel defaults; don't ship production with
+  # smaller numbers unless you're actually targeting a smaller
+  # panel.
   card_width: 250
-  card_gap: 2
+  card_gap: 8
   screen_width: 1024
   screen_height: 600
   start_x: 0
