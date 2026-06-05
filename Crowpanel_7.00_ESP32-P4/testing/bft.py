@@ -66,6 +66,18 @@ CRASH_PATTERNS = [
     re.compile(r"esp_backtrace_print", re.IGNORECASE),
     re.compile(r"Brownout", re.IGNORECASE),
     re.compile(r"panic'ed", re.IGNORECASE),
+    # v1.22n: task watchdog (IDF freeRTOS). The task_wdt
+    # prints "Task watchdog got triggered" + "Aborting" then
+    # a backtrace. This fires when a task doesn't call
+    # taskYIELD() / vTaskDelay() / feed_wdt() within the
+    # watchdog timeout (default ~5s on IDF). Common cause
+    # in this project: a long-running JSON parse in the
+    # main loop (the bulk /api/states response is ~200KB
+    # and can take >5s to deserialize on the first boot
+    # when the httpd + WiFi + LVGL are all initing).
+    re.compile(r"task_wdt", re.IGNORECASE),
+    re.compile(r"Task watchdog", re.IGNORECASE),
+    re.compile(r"did not reset the watchdog", re.IGNORECASE),
 ]
 
 # How aggressively the log session tries to recover from a dropped
