@@ -172,21 +172,121 @@ def shot(name, output=None, bmp=None, timeout=45):
         return 2, f"timeout after {timeout}s", output
     return rc, out, output
 
+def get_panel_state(max_age_s=2.0):
+    """Poll /autopanel/test/state until it returns a fresh response.
+
+    The endpoint reads from in-memory state - there is no
+    monotonic counter, so 'freshness' is approximate: we just
+    poll until the response contains the panel_state we expect
+    OR the timeout expires. Returns the parsed state dict
+    (panel_state=..., room_count=N, ...) or None on timeout.
+    """
+    import urllib.error as _urllib_error
+    import urllib.request as _urllib_request
+    url = f"http://{IP}/autopanel/test/state"
+    deadline = time.time() + max_age_s
+    while time.time() < deadline:
+        try:
+            with _urllib_request.urlopen(url, timeout=3) as r:
+                body = r.read().decode('utf-8', errors='replace')
+                # Parse the key=value lines into a dict
+                state = {}
+                for line in body.splitlines():
+                    if '=' in line:
+                        k, v = line.split('=', 1)
+                        state[k.strip()] = v.strip()
+                return state
+        except Exception:
+            pass
+        time.sleep(0.1)
+    return None
+
+
+def wait_for_state(expected_panel_state, expected_room_index=None,
+                   timeout_s=5.0, poll_interval_s=0.05):
+    """Poll /autopanel/test/state until the panel reaches a target
+    state, or until timeout_s elapses. The point of this is to
+    replace blind time.sleep() calls with an actual check - the
+    test moves on as soon as the panel reports it's at the
+    target state, instead of waiting a worst-case amount of
+    time. This typically turns a 5-10 second 'wait 2s for
+    LVGL' into 50-200ms once the panel is in the right state.
+
+    expected_panel_state: 'READY', 'SETUP_REQUIRED', etc.
+    expected_room_index: int, or None to ignore (e.g. for the
+        grid page where current_room_index is -1).
+    timeout_s: max wait before bailing. Generous because the
+        panel might be mid-layout when we start polling.
+
+    Returns the final state dict (so the caller can read other
+    fields like current_room_index without another round-trip)
+    or None on timeout.
+    """
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        state = get_panel_state(max_age_s=poll_interval_s * 2)
+        if state is None:
+            continue
+        if state.get('panel_state') != expected_panel_state:
+            time.sleep(poll_interval_s)
+            continue
+        if expected_room_index is not None:
+            try:
+                cri = int(state.get('current_room_index', '-1'))
+            except (TypeError, ValueError):
+                cri = -1
+            if cri != expected_room_index:
+                time.sleep(poll_interval_s)
+                continue
+        return state
+        # implicit continue
+    return None
+
+
 def web_cmd(cmd_char, wait=2):
     """Send a single-char command via the /autopanel/test/cmd web API.
 
     Gated by agent_debug: true in the test yaml. Returns (rc, out).
-    Wait happens here on the test side - the LVGL events dispatched
-    by the web API are queued and need a beat to render before the
-    next screenshot.
+    The wait here is a FALLBACK: we also call wait_for_state()
+    to return as soon as the panel reports the target state,
+    instead of always waiting the full wall-clock wait. If the
+    panel never reaches the target (or the endpoint is down)
+    we still time out at `wait` seconds, so total test time
+    is bounded.
     """
     import urllib.error as _urllib_error
     import urllib.request as _urllib_request
     url = f"http://{IP}/autopanel/test/cmd?c={cmd_char}"
+    # Map command to expected post-state. Reads the same
+    # panel_state_name_() output the device uses, so we don't
+    # duplicate the string set.
+    target = {
+        's': 'SETUP_REQUIRED', 'a': 'AUTH_FAILED',
+        'n': 'NOT_AUTHORIZED',  'c': 'CONNECTING',
+        'g': 'READY',           'o': None,  # sort opens overlay, panel_state unchanged
+        'O': None,              'd': 'CONNECTING',  # discovery starts with CONNECTING
+        'h': None,              'p': None, 'r': None,
+        '0': 'READY', '1': 'READY', '2': 'READY', '3': 'READY',
+        '4': 'READY', '5': 'READY', '6': 'READY', '7': 'READY',
+        '8': 'READY', '9': 'READY',
+    }.get(cmd_char)
     try:
         with _urllib_request.urlopen(url, timeout=wait+5) as r:
             body = r.read().decode('utf-8', errors='replace')
-            time.sleep(wait)
+            if target is not None:
+                # Poll for the target state. Generous timeout so a
+                # mid-layout poll doesn't time out, but most steps
+                # return in well under wait seconds.
+                final = wait_for_state(target, timeout_s=wait)
+                if final is None:
+                    # Polling timed out - fall back to a hard sleep
+                    # so the screenshot at least catches the
+                    # partial render.
+                    time.sleep(wait)
+            else:
+                # No specific target - small wait for LVGL to
+                # draw the overlay.
+                time.sleep(min(wait, 0.5))
             return 0 if r.status == 200 else 1, body
     except _urllib_error.HTTPError as e:
         return 1, f"HTTP {e.code}: {e.read().decode('utf-8', errors='replace')[:200]}"
