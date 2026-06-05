@@ -1,0 +1,291 @@
+# Freenove FNK0104B (2.8" Touch) — ESPHome config with ha_autopanel.
+# Pattern: test_dynamic_component.yaml from C:\ESPHome_Projects\Crowpanel_7.00_ESP32-P4
+# Hardware: ESP32-S3-WROOM-1 (N16R8V — 16MB flash, 8MB OPI PSRAM)
+# Display:  ILI9341 240x320 4-wire SPI (CS=10, MOSI=11, SCLK=12, DC=46, BL=45 active HIGH)
+# Touch:    FT6336U I2C 0x38 (SDA=16, SCL=15, INT=17, RST=18)
+# Audio:    ES8311 codec on shared I2C 0x18, FM8002E amp on GPIO 1 (active LOW).
+#           Amp enable is exposed as `amp_ctrl` output so the user can
+#           mute from HA or from the ha_autopanel UI.
+# Battery:  TP4054 + 1/2 divider on GPIO 9 (not wired in this config).
+
+substitutions:
+  friendly_name: fnk0104b
+  esphome_version: "2026.4.5"
+
+esphome:
+  name: fnk0104b
+  friendly_name: ${friendly_name}
+  environment_variables:
+    # PLATFORMIO_HOME_DIR: ".platformio_home"
+    PLATFORMIO_PACKAGES_DIR: ".platformio_packages"
+    # PLATFORMIO_CACHE_DIR: ".platformio_cache"
+    PLATFORMIO_PLATFORMS_DIR: ".platformio_platforms"
+  on_boot:
+    priority: -1000
+    then:
+      - logger.log: "Backlight ON, amp enable"
+      - output.turn_on: backlight_pwm
+      - output.turn_on: amp_ctrl    # GPIO 1 LOW enables FM8002E
+      - light.turn_on:
+          id: back_light
+          brightness: 1
+
+esp32:
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+  platformio_options:
+    build_flags:
+      - -Wl,--use-response-file
+
+# N16R8V: 8MB OPI PSRAM. Confirmed by user; this is the Octal variant
+# (note the V — Quad variants are N16R8 without the V).
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG   # native USB CDC, no UART bridge on this board
+  level: INFO
+
+api:
+  encryption:
+    key: !secret encryption_key
+  # Required for ha_autopanel to call HA services (light.turn_on/off, switch.toggle)
+  # and subscribe to state_changed events. Without these the C++ component won't link.
+  homeassistant_services: true
+  homeassistant_states: true
+  on_client_connected:
+    - logger.log: "HA Connected!"
+    # Probe HA's authorization to perform service actions. If the device
+    # isn't allowed (the integration's "Allow Home Assistant actions"
+    # option is off, or the device hasn't been added to HA yet), the
+    # probe times out and the panel shows NOT_AUTHORIZED with a Retry
+    # button. If the probe succeeds, the panel stays in READY.
+    - delay: 1s
+    - lambda: 'id(dynamic_discovery).trigger_auth_probe();'
+    # Subscribe to state changes once the API is fully up.
+    - delay: 1s
+    - lambda: 'id(dynamic_discovery).trigger_subscription();'
+
+# Built-in web server provides the underlying HTTP transport. ha_autopanel
+# registers its /autopanel setup form and /autopanel/save POST handler
+# against this base. The panel UI is not served here; it's drawn on
+# the LVGL display.
+web_server:
+  port: 80
+
+ota:
+  - platform: esphome
+
+# SNTP time sync - the title bar's clock and the debug panel's
+# Date/Time section both read from this. Three servers in priority
+# order: pool.ntp.org (generic, may be blocked on some networks),
+# time.google.com (Google's NTP, often whitelisted), time.cloudflare.com
+# (Cloudflare's NTP, also widely whitelisted). ESPHome's SNTP tries them
+# in order; if all three are unreachable, the title bar will show
+# "--:--" until sync succeeds. The on_time_sync log lets the host
+# harness (send_cmd.py) verify the sync.
+time:
+  - platform: sntp
+    id: sntp_time
+    servers:
+      - 0.pool.ntp.org
+      - time.google.com
+      - time.cloudflare.com
+    timezone: "America/New_York"   # adjust per installation
+    on_time_sync:
+      then:
+        - logger.log: "NTP time synced"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: !secret my_ap_password
+  on_connect:
+    then:
+      - delay: 1s
+      - logger.log: "WiFi connected, triggering dynamic discovery..."
+      - lambda: 'id(dynamic_discovery).trigger_discovery();'
+
+# Display SPI bus — 4-wire to ILI9341 (no MISO on this panel).
+spi:
+  - id: display_spi
+    clk_pin: GPIO12
+    mosi_pin: GPIO11
+
+# I2S audio bus — to ES8311 codec.
+# BCLK=5, WS=7, MCLK=4. DOUT (data out to codec) lives on the speaker
+# block (i2s_dout_pin) — i2s_audio only carries the clock pins.
+i2s_audio:
+  - id: i2s_audio_bus
+    i2s_lrclk_pin: GPIO7
+    i2s_bclk_pin: GPIO5
+    i2s_mclk_pin: GPIO4
+
+# Shared I2C bus: FT6336U touch at 0x38, ES8311 codec at 0x18.
+i2c:
+  - id: bus_a
+    sda: GPIO16
+    scl: GPIO15
+    frequency: 400kHz
+
+output:
+  - platform: ledc
+    pin:
+      number: GPIO45
+      ignore_strapping_warning: true
+    id: backlight_pwm
+  - platform: gpio
+    id: amp_ctrl
+    pin: GPIO1
+    inverted: true     # FM8002E amp enable is active LOW
+
+audio_dac:
+  - platform: es8311
+    id: es8311_dac
+    i2c_id: bus_a
+    address: 0x18
+    sample_rate: 44100    # 44.1 kHz — matches the unigeek SpeakerI2S default
+    bits_per_sample: 16bit
+
+speaker:
+  - platform: i2s_audio
+    id: my_speaker
+    i2s_audio_id: i2s_audio_bus
+    i2s_dout_pin: GPIO8
+    dac_type: external
+    audio_dac: es8311_dac
+    sample_rate: 44100
+    bits_per_sample: 16bit
+    channel: left
+
+  - platform: mixer
+    id: speaker_mixer
+    output_speaker: my_speaker
+    source_speakers:
+      - id: announcement_speaker
+      - id: media_speaker
+
+media_player:
+  - platform: speaker
+    id: my_media_player
+    name: "Freenove Speaker"
+    internal: false
+    volume_increment: 5%
+    volume_min: 0
+    volume_max: 1.0
+    announcement_pipeline:
+      speaker: announcement_speaker
+      sample_rate: 44100
+      num_channels: 1
+      format: WAV
+    media_pipeline:
+      speaker: media_speaker
+      sample_rate: 44100
+      num_channels: 1
+      format: MP3
+
+light:
+  - platform: monochromatic
+    name: "Backlight"
+    output: backlight_pwm
+    id: back_light
+    restore_mode: ALWAYS_ON
+    internal: true
+
+http_request:
+  id: ha_http
+
+touchscreen:
+  - platform: ft63x6
+    id: my_touchscreen
+    i2c_id: bus_a
+    address: 0x38
+    reset_pin: GPIO18
+    interrupt_pin: GPIO17
+    display: my_display
+    transform:
+      swap_xy: false
+      mirror_x: false
+      mirror_y: false
+
+display:
+  - platform: mipi_spi
+    # ILI9341 240x320. The mipi_spi model list uses the panel IC name
+    # (not the board name like the old ili9xxx did). M5Stack's ILI9342C
+    # and the FNK0104B's ILI9341 share the same resolution + BGR order,
+    # so the same init table applies. BGR + color inversion are needed.
+    model: ILI9341
+    id: my_display
+    cs_pin: GPIO10
+    dc_pin:
+      number: GPIO46
+      ignore_strapping_warning: true
+    # No hardware reset pin on this board (RST tied to ESP32-S3 EN).
+    dimensions:
+      width: 240
+      height: 320
+    update_interval: never
+    auto_clear_enabled: false
+    color_order: BGR
+    spi_id: display_spi
+    invert_colors: true   # FNK0104B panel requires color inversion
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_large
+    size: 20    # smaller than the Crowpanel's 28 because of the 240x320 screen
+    bpp: 4
+
+lvgl:
+  displays:
+    - my_display
+  touchscreens:
+    - my_touchscreen
+  buffer_size: 100%
+  full_refresh: true
+  byte_order: little_endian
+  color_depth: 16
+  log_level: INFO
+  bg_color: 0x111827
+  text_font: font_large
+  # Flex layout is enabled by the ha_autopanel component's __init__.py
+  # (it calls lvgl.defines.add_define("LV_USE_FLEX", "1") since the
+  # lv_use_flex YAML key isn't part of the lvgl config schema). The
+  # title-bar right cluster and the room-card rows both use
+  # lv_obj_set_flex_flow so the layout reflows across screen widths.
+  widgets:
+    # Widgets needed by dynamic_entity_discovery component
+    - arc: {}
+    - label: {}
+
+external_components:
+  - source:
+      type: local
+      path: C:/ESPHome_Projects/esphome_dynamic_entity_discovery/components
+    components: [ha_autopanel]
+
+ha_autopanel:
+  id: dynamic_discovery
+  # ha_api_url and ha_api_password are still required here for now,
+  # but in the no-code vision they will move to LittleFS and be set
+  # via the /autopanel web form. defaults below are empty so the user
+  # doesn't have to hardcode area/entity/domain filters.
+  ha_api_url: "http://homeassistant.local:8123"
+  ha_api_password: !secret my_ha_api_password
+  http_request_ref: ha_http
+  # Auto-fit square-card layout for the 240x320 portrait panel.
+  # card_width=110 fits 2 cards per row at 240px width with a 2px gap.
+  card_width: 240
+  card_gap: 0
+  screen_width: 240
+  screen_height: 320
+  start_x: 0
+  start_y: 40
+  default_on_pct: 30
+
+captive_portal:
