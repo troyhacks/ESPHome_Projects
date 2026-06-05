@@ -95,14 +95,15 @@ web_server:
 ota:
   - platform: esphome
 
-# SNTP time sync - the title bar's clock and the debug panel's
-# Date/Time section both read from this. Three servers in priority
-# order: pool.ntp.org (generic, may be blocked on some networks),
-# time.google.com (Google's NTP, often whitelisted), time.cloudflare.com
-# (Cloudflare's NTP, also widely whitelisted). ESPHome's SNTP tries them
-# in order; if all three are unreachable, the title bar will show
-# "--:--" until sync succeeds. The on_time_sync log lets the host
-# harness (send_cmd.py) verify the sync.
+# Time source for the title bar clock. SNTP works on most networks
+# but the test box here can't reach UDP/123 outbound. The homeassistant
+# time source would be the cleanest fix (asks HA via the API, no
+# extra port) but it triggers a git-context dependency-resolution
+# error in the IDF build when the build dir isn't itself a git
+# repo. For now, keep SNTP and accept that the title bar shows
+# "--:--" until the user's NTP network policy is fixed. A future
+# fix should swap this for the homeassistant platform and put the
+# build dir back inside the project.
 time:
   - platform: sntp
     id: sntp_time
@@ -110,7 +111,7 @@ time:
       - 0.pool.ntp.org
       - time.google.com
       - time.cloudflare.com
-    timezone: "America/New_York"   # adjust per installation
+    timezone: "America/New_York"
     on_time_sync:
       then:
         - logger.log: "NTP time synced"
@@ -227,6 +228,9 @@ ha_autopanel:
   ha_api_url: "http://homeassistant.local:8123"
   ha_api_password: !secret my_ha_api_password
   http_request_ref: ha_http
+  # Wire the title bar clock to the SNTP time source. The id has
+  # to match the `id:` in the `time:` block above.
+  time_ref: sntp_time
   # Auto-fit square-card layout
   card_width: 250
   card_gap: 2
