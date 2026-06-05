@@ -235,5 +235,12 @@ ha_autopanel:
   start_x: 0
   start_y: 40
   default_on_pct: 30
+  # AGENT_DEBUG: opt-in switch that exposes /autopanel/test/* HTTP
+  # endpoints (click, scroll, cmd, state) and /autopanel/screenshot.jpg.
+  # The test harness uses these to drive the panel without holding the
+  # serial port. Default in the component is false; flip to true in
+  # this test config so bft.py / run_tests.py can hit the test API.
+  # Production yml should leave it at the default.
+  agent_debug: true
 
 captive_portal:

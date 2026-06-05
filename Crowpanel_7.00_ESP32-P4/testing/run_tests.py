@@ -123,9 +123,46 @@ def run_harness(args, timeout=30):
 
 def shot(name, output=None, bmp=None, timeout=45):
     """Capture a screenshot. Returns (rc, out, path).
-    rc: 0 = ok, 1 = failed, 2 = timed out (still continues)."""
-    output = output or str(SHOTS / f"{name}.png")
-    bmp = bmp or str(SHOTS / f"{name}.bmp")
+    rc: 0 = ok, 1 = failed, 2 = timed out (still continues).
+
+    Filenames get a timestamp suffix (e.g. "01_initial_grid_20260605-083015.png")
+    so it's clear at a glance which screenshots are from which run. The
+    --name option (passed as `name`) preserves the human-readable tag,
+    the suffix is just for ordering.
+
+    Tries the JPEG endpoint first (on P4 / wherever the device has
+    SOC_JPEG_ENCODE_SUPPORTED) which gives a much smaller payload
+    than BMP and avoids the BMP->PNG conversion step. Falls back
+    to the BMP endpoint + Python conversion if the device returns
+    501 (not implemented) or any other error - this keeps the test
+    suite usable on S2/S3/C3/C6 too.
+    """
+    from datetime import datetime
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    output = output or str(SHOTS / f"{name}_{ts}.png")
+    bmp = bmp or str(SHOTS / f"{name}_{ts}.bmp")
+    # Try JPEG first.
+    try:
+        r = subprocess.run(
+            ['curl', '-s', '-m', str(timeout), '-o', output,
+             '-w', '%{http_code}',
+             f'http://{IP}/autopanel/screenshot.jpg'],
+            capture_output=True, text=True, timeout=timeout + 5
+        )
+        http_code = r.stdout.strip()
+        if r.returncode == 0 and http_code == '200' and os.path.getsize(output) > 1000:
+            # The .jpg file is a real JPEG; rename to .jpg for clarity
+            # and don't keep a BMP around.
+            jpg_path = output[:-4] + '.jpg' if output.endswith('.png') else output
+            try:
+                os.replace(output, jpg_path)
+                output = jpg_path
+            except OSError:
+                pass
+            return 0, f'jpg {os.path.getsize(output)} bytes', output
+    except subprocess.TimeoutExpired:
+        pass
+    # Fall back to the BMP path via the harness (which does BMP->PNG).
     try:
         rc, out = run_harness([
             "screenshot", "--ip", IP,
@@ -135,28 +172,53 @@ def shot(name, output=None, bmp=None, timeout=45):
         return 2, f"timeout after {timeout}s", output
     return rc, out, output
 
-def serial_cmd(cmd, wait=2):
-    """Send a single-char serial command."""
+def web_cmd(cmd_char, wait=2):
+    """Send a single-char command via the /autopanel/test/cmd web API.
+
+    Gated by agent_debug: true in the test yaml. Returns (rc, out).
+    Wait happens here on the test side - the LVGL events dispatched
+    by the web API are queued and need a beat to render before the
+    next screenshot.
+    """
+    import urllib.error as _urllib_error
+    import urllib.request as _urllib_request
+    url = f"http://{IP}/autopanel/test/cmd?c={cmd_char}"
     try:
-        rc, out = run_harness([PORT, cmd, "--wait", str(wait)], timeout=wait+8)
-    except subprocess.TimeoutExpired:
-        return 1, f"timeout after {wait+8}s"
-    return rc, out
+        with _urllib_request.urlopen(url, timeout=wait+5) as r:
+            body = r.read().decode('utf-8', errors='replace')
+            time.sleep(wait)
+            return 0 if r.status == 200 else 1, body
+    except _urllib_error.HTTPError as e:
+        return 1, f"HTTP {e.code}: {e.read().decode('utf-8', errors='replace')[:200]}"
+    except Exception as e:
+        return 1, f"error: {e}"
+
+def web_click(x, y, wait=2):
+    """Tap the screen at (x, y) via the /autopanel/test/click web API.
+    Gated by agent_debug: true. Returns (rc, out).
+    """
+    import urllib.error as _urllib_error
+    import urllib.request as _urllib_request
+    url = f"http://{IP}/autopanel/test/click?x={x}&y={y}"
+    try:
+        with _urllib_request.urlopen(url, timeout=wait+5) as r:
+            body = r.read().decode('utf-8', errors='replace')
+            time.sleep(wait)
+            return 0 if r.status == 200 else 1, body
+    except _urllib_error.HTTPError as e:
+        return 1, f"HTTP {e.code}: {e.read().decode('utf-8', errors='replace')[:200]}"
+    except Exception as e:
+        return 1, f"error: {e}"
+
+# Backwards-compat shims. The original test code used the names
+# serial_cmd / click. The new code uses the web_* variants above;
+# these thin wrappers keep the test bodies readable as if they
+# were driving the serial port, but the port is actually untouched.
+def serial_cmd(cmd, wait=2):
+    return web_cmd(cmd, wait=wait)
 
 def click(x, y, wait=2):
-    """Tap the screen at (x, y) via the new click sim.
-
-    Note: send_cmd.py's cmd_click does NOT accept a --wait flag, and
-    silently misinterprets trailing flags as coordinates. Earlier
-    revisions passed --wait, which caused `int('--wait')` ValueErrors
-    that the test misread as a device-side failure. The wait
-    happens in the test (via wait_for_settle) anyway.
-    """
-    try:
-        rc, out = run_harness(["click", "--port", PORT, str(x), str(y)], timeout=wait+8)
-    except subprocess.TimeoutExpired:
-        return 1, f"timeout after {wait+8}s"
-    return rc, out
+    return web_click(x, y, wait=wait)
 
 def wait_for_settle(seconds=2):
     """Give the panel time to render before the next screenshot."""
@@ -176,9 +238,10 @@ def record(name, passed, summary):
 def test_01_initial_grid():
     """Capture the initial grid state after boot."""
     rc, out, png = shot("01_initial_grid")
-    ok = rc == 0 and os.path.exists(png) and os.path.getsize(png) > 1000
+    size_b = os.path.getsize(png) if os.path.isfile(png) else 0
+    ok = rc == 0 and size_b > 1000
     record("01 initial grid", ok,
-           f"{os.path.getsize(png)} bytes" if ok else f"rc={rc}: {out[:200]}")
+           f"{size_b} bytes" if ok else f"rc={rc}: {out[:200]}")
 
 def test_02_state_machine(quick):
     """Cycle through every panel state. Each is a forced transition."""
@@ -384,9 +447,10 @@ def test_11_state_sync_on():
     # Give HA + api subscription + LVGL redraw time
     wait_for_settle(4)
     rc, out, png = shot("16_state_sync_on")
-    ok = rc == 0 and os.path.getsize(png) > 1000
+    size_b = os.path.getsize(png) if os.path.isfile(png) else 0
+    ok = rc == 0 and size_b > 1000
     record("11 state sync (turn on light)", ok,
-           f"HA turn_on {chosen}; shot {os.path.getsize(png)}B "
+           f"HA turn_on {chosen}; shot {size_b}B "
            f"(visual check of {png} required to confirm GUI update)")
 
 def test_12_state_sync_off():
@@ -404,9 +468,17 @@ def test_12_state_sync_off():
     print(f"    -> HA turn_off {chosen}: rc={rc} body={body[:100]}")
     wait_for_settle(3)
     rc2, out2, png = shot("17_state_sync_off")
-    ok = rc == 200 and rc2 == 0
+    # Wrap the file-size check in a guard so a transient screenshot
+    # failure (timeout, busy device) doesn't kill the entire test run.
+    # The test still gets recorded as a fail in that case, but the
+    # rest of the run completes.
+    if os.path.isfile(png):
+        size_b = os.path.getsize(png)
+    else:
+        size_b = 0
+    ok = rc == 200 and rc2 == 0 and size_b > 0
     record("12 state sync (turn off light)", ok,
-           f"HA rc={rc} shot rc={rc2} ({os.path.getsize(png)}B)")
+           f"HA rc={rc} shot rc={rc2} ({size_b}B)")
 
 
 def main():
