@@ -1,0 +1,3 @@
+# Only keep PNGs (PNGs are viewable in git diffs; BMPs are huge
+# binary blobs that just bloat the repo).
+*.bmp
