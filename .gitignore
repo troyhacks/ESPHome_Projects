@@ -1,3 +1,7 @@
+# Build artifacts
+**/.pioenvs/
+**/.platformio_home/
+**/__pycache__/
 .esphome
 .claude
 secrets.yaml
@@ -5,3 +9,4 @@ managed_components
 build
 dependencies.lock
 components
+**/testing/logs/
