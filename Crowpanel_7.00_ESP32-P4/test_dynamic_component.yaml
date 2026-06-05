@@ -8,6 +8,18 @@ substitutions:
 esphome:
   name: test-dynamic-discovery
   friendly_name: ${friendly_name}
+  # build_path at C:/esphome_tdd is OUTSIDE the project so the
+  # absolute paths to the source files are short - the linker
+  # command line on Windows can otherwise exceed the 32k char
+  # CreateProcess limit ("command line too long" error from
+  # idf.py at link time). The recommended fix is
+  # `-Wl,--use-response-file` but that requires patching the
+  # IDF build system, not exposed via ESPHome YAML. Keeping
+  # the build path short works around it. The dependency-
+  # resolution step also runs `git rev-parse` to find the
+  # project version; we ran into 'fatal: not a git repository'
+  # errors when the project is heavy on add_idf_component()
+  # calls. If that returns, init a git repo in C:/esphome_tdd.
   build_path: C:/esphome_tdd
   on_boot:
     priority: -1000
