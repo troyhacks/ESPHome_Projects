@@ -338,22 +338,46 @@ def run_tests(log_session):
     crash. Returns (ok: bool, summary: str)."""
     log('test', f'running {TESTS.name} --quick')
     test_log = LOGS / f"test_{time.strftime('%Y%m%d-%H%M%S')}.log"
-    proc = subprocess.run(
-        ['python', str(TESTS), '--quick'],
-        cwd=str(HERE),
-        capture_output=True, text=True
+    # v1.17: flip the AUTO-TEST banner on so the user can see the
+    # test harness is driving the panel. Banners turn on before
+    # the test process starts and turn off after it exits, so the
+    # user gets visual confirmation that bft.py is in control.
+    # If the device's HTTP server is in a bad state (the
+    # 1.9s-LVGL / 1.x-httpd-hang bug), the curl here will
+    # timeout silently - the banner won't show, but the tests
+    # still run. The test_banner_active flag is in-memory so it
+    # also resets to false on reboot.
+    subprocess.run(
+        ['curl', '-sS', '-m', '5', '-o', '/dev/null',
+         f'http://{ESP32_IP}/autopanel/test/banner?on=1'],
+        capture_output=True, text=True, timeout=8
     )
-    test_log.write_text(proc.stdout + proc.stderr, encoding='utf-8')
-    # If a crash happened during the run, surface it as a failure
-    # even if the test process itself exited cleanly.
-    if log_session.crashed:
-        crash_lines = log_session.crash_lines
-        return False, f"CRASH during test run: {crash_lines[0][:200]}"
-    log('test', f'exit code {proc.returncode}, log: {test_log}')
-    if proc.stdout:
-        for line in proc.stdout.strip().splitlines()[-20:]:
-            print(f"    {line}")
-    return proc.returncode == 0, 'ok' if proc.returncode == 0 else 'test failures'
+    try:
+        proc = subprocess.run(
+            ['python', str(TESTS), '--quick'],
+            cwd=str(HERE),
+            capture_output=True, text=True
+        )
+        test_log.write_text(proc.stdout + proc.stderr, encoding='utf-8')
+        # If a crash happened during the run, surface it as a failure
+        # even if the test process itself exited cleanly.
+        if log_session.crashed:
+            crash_lines = log_session.crash_lines
+            return False, f"CRASH during test run: {crash_lines[0][:200]}"
+        log('test', f'exit code {proc.returncode}, log: {test_log}')
+        if proc.stdout:
+            for line in proc.stdout.strip().splitlines()[-20:]:
+                print(f"    {line}")
+        return proc.returncode == 0, 'ok' if proc.returncode == 0 else 'test failures'
+    finally:
+        # Always turn the banner back off, even on exception, so
+        # a crashed test process doesn't leave the user with a
+        # permanent "AUTO-TEST" pill on their panel.
+        subprocess.run(
+            ['curl', '-sS', '-m', '5', '-o', '/dev/null',
+             f'http://{ESP32_IP}/autopanel/test/banner?on=0'],
+            capture_output=True, text=True, timeout=8
+        )
 
 
 def main():
