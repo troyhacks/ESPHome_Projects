@@ -7,8 +7,8 @@ substitutions:
 
 esphome:
   name: test-dynamic-discovery
-  # build_path: y:/esphome_test-dynamic-discovery
   friendly_name: ${friendly_name}
+  build_path: C:/esphome_tdd
   on_boot:
     priority: -1000
     then:
@@ -95,6 +95,26 @@ web_server:
 ota:
   - platform: esphome
 
+# SNTP time sync - the title bar's clock and the debug panel's
+# Date/Time section both read from this. Three servers in priority
+# order: pool.ntp.org (generic, may be blocked on some networks),
+# time.google.com (Google's NTP, often whitelisted), time.cloudflare.com
+# (Cloudflare's NTP, also widely whitelisted). ESPHome's SNTP tries them
+# in order; if all three are unreachable, the title bar will show
+# "--:--" until sync succeeds. The on_time_sync log lets the host
+# harness (send_cmd.py) verify the sync.
+time:
+  - platform: sntp
+    id: sntp_time
+    servers:
+      - 0.pool.ntp.org
+      - time.google.com
+      - time.cloudflare.com
+    timezone: "America/New_York"   # adjust per installation
+    on_time_sync:
+      then:
+        - logger.log: "NTP time synced"
+
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
@@ -147,8 +167,8 @@ touchscreen:
       swap_xy: false
       mirror_x: false
       mirror_y: false
-    on_touch:
-      - logger.log: "Touch detected"
+    # on_touch:
+    #   - logger.log: "Touch detected"
 
 display:
   - platform: mipi_dsi
@@ -182,6 +202,11 @@ lvgl:
   log_level: INFO
   bg_color: 0x111827
   text_font: font_large
+  # Flex layout is enabled by the ha_autopanel component's __init__.py
+  # (it calls lvgl.defines.add_define("LV_USE_FLEX", "1") since the
+  # lv_use_flex YAML key isn't part of the lvgl config schema). The
+  # title-bar right cluster and the room-card rows both use
+  # lv_obj_set_flex_flow so the layout reflows across screen widths.
   widgets:
     # Widgets needed by dynamic_entity_discovery component
     - arc: {}
@@ -204,10 +229,10 @@ ha_autopanel:
   http_request_ref: ha_http
   # Auto-fit square-card layout
   card_width: 250
-  card_gap: 12
+  card_gap: 2
   screen_width: 1024
   screen_height: 600
-  start_x: 10
+  start_x: 0
   start_y: 40
   default_on_pct: 30
 
