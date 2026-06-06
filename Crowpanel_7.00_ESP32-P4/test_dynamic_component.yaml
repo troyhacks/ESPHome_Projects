@@ -143,7 +143,19 @@ esp32_hosted:
   d1_pin: GPIO15
   d2_pin: GPIO16
   d3_pin: GPIO17
-  # sdio_frequency: 10MHz # default is 20MHz; can be lowered if SDIO link stability is an issue
+  # v1.22x: lower SDIO frequency 20MHz -> 10MHz. The default
+  # 20MHz causes sdio_rx_get_buffer() to assert in sdio_drv.c:896
+  # (*buf == NULL) when the host drains the SDIO ring buffer
+  # too slowly during a 200KB+ bulk /api/states transfer. The
+  # buffer pool is drained by the httpd task (which is also
+  # parsing JSON + allocating), and at 20MHz the C6 outpaces
+  # the drain. 10MHz gives the host ~2x more time per buffer
+  # without any code change. v1.22v on this hardware survived
+  # the same transfer with the 20MHz default; v1.22w's std::function
+  # fix avoided the secondary abort, but the underlying SDIO
+  # wedge was still present. 10MHz is the documented workaround
+  # for the SDIO link stability issue.
+  sdio_frequency: 10MHz
 
 logger:
   hardware_uart: UART0 # alternatively, USB_SERIAL_JTAG
@@ -369,5 +381,17 @@ ha_autopanel:
   # user's HA doesn't have a weather.home entity).
   # use_24h_time: true
   weather_entity_id: "weather.forecast_home"
+  # enable_stuck_task_recovery: defaults to false. The user
+  # wants visibility first, recovery second. The C6 reset
+  # GPIO (v1.22y) is wired in the C++ side but the knob
+  # stays off in this test yaml because the 5s eBlocked
+  # threshold fired on every boot during v1.22y testing -
+  # normal C6 init takes 5-10s. With the 30s threshold
+  # (v1.22z), the recovery is more conservative, but the
+  # default is still off. Flip to true to enable the
+  # graduated recovery sequence (log -> drop httpd worker
+  # priority -> C6 reset via GPIO32 -> App.reboot after
+  # 3 recoveries in a window).
+  # enable_stuck_task_recovery: true
 
 captive_portal:
