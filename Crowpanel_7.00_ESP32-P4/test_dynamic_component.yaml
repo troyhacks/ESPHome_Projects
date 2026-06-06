@@ -89,7 +89,7 @@ esp32_hosted:
   d1_pin: GPIO15
   d2_pin: GPIO16
   d3_pin: GPIO17
-  # sdio_frequency: 10MHz
+  # sdio_frequency: 10MHz # default is 20MHz; can be lowered if SDIO link stability is an issue
 
 logger:
   hardware_uart: UART0 # alternatively, USB_SERIAL_JTAG
@@ -292,7 +292,7 @@ ha_autopanel:
   # here are the 7" Crowpanel defaults; don't ship production with
   # smaller numbers unless you're actually targeting a smaller
   # panel.
-  card_width: 250
+  card_width: 256 # change is intentional by Troy
   card_gap: 8
   screen_width: 1024
   screen_height: 600
@@ -306,5 +306,12 @@ ha_autopanel:
   # this test config so bft.py / run_tests.py can hit the test API.
   # Production yml should leave it at the default.
   agent_debug: true
+  # v1.22s: title bar knobs (test overrides for verification).
+  # Flip use_24h_time and weather_entity_id to verify the
+  # new features; the panel's stock yaml uses the default
+  # 12h time + weather.home (which 404s silently if the
+  # user's HA doesn't have a weather.home entity).
+  # use_24h_time: true
+  # weather_entity_id: "weather.forecast_home"
 
 captive_portal:
