@@ -22,10 +22,11 @@ esphome:
   # calls. If that returns, init a git repo in C:/esphome_tdd.
   build_path: C:/esphome_tdd
   environment_variables:
-    PLATFORMIO_HOME_DIR: "C:/esphome_tdd/.home"
-    PLATFORMIO_PACKAGES_DIR: "C:/esphome_tdd/.packages"
-    PLATFORMIO_CACHE_DIR: "C:/esphome_tdd/.cache"
-    PLATFORMIO_PLATFORMS_DIR: "C:/esphome_tdd/.platforms"
+    PLATFORMIO_CORE_DIR: "C:/esphome_tdd"
+    # PLATFORMIO_HOME_DIR: "C:/esphome_tdd/.home"
+    # PLATFORMIO_PACKAGES_DIR: "C:/esphome_tdd/.packages"
+    # PLATFORMIO_CACHE_DIR: "C:/esphome_tdd/.cache"
+    # PLATFORMIO_PLATFORMS_DIR: "C:/esphome_tdd/.platforms"
   on_boot:
     priority: -1000
     then:
@@ -54,6 +55,20 @@ esp32:
     advanced:
       execute_from_psram: true
       enable_idf_experimental_features: true
+    # v1.22q: bump the IDF freeRTOS task watchdog (TWDT)
+    # timeout from 5s (default) to 30s. The 5s default is
+    # too aggressive for the P4 + ESP32-C6 wifi co-processor
+    # setup - the SDIO link occasionally takes 6-8 seconds
+    # to recover from a transient (see the 2117 'sdmmc_io'
+    # errors in v1.22p log watch + a 3.8s single wifi
+    # operation). With a 5s timeout, any wifi hiccup
+    # trips the TWDT and the panel reboots itself
+    # (rst:0xc SW_CPU_RESET). 30s gives the SDIO driver
+    # plenty of slack while still catching real hangs.
+    # This is idempotent: ESPHome re-emits the sdkconfig
+    # option on every build.
+    sdkconfig_options:
+      CONFIG_ESP_TASK_WDT_TIMEOUT_S: "30"
 
 psram:
   speed: 200MHz
@@ -74,7 +89,7 @@ esp32_hosted:
   d1_pin: GPIO15
   d2_pin: GPIO16
   d3_pin: GPIO17
-  sdio_frequency: 10MHz
+  # sdio_frequency: 10MHz
 
 logger:
   hardware_uart: UART0 # alternatively, USB_SERIAL_JTAG
@@ -204,10 +219,26 @@ display:
 
 font:
   - file: "gfonts://Roboto"
-    id: font_large
+    id: font_xl
     size: 28
     bpp: 4
-    
+  - file: "gfonts://Roboto"
+    id: font_lg
+    size: 24
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_md
+    size: 20
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_sm
+    size: 16
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_button
+    size: 14
+    bpp: 4
+
 lvgl:
   displays:
     - my_display
@@ -219,7 +250,7 @@ lvgl:
   color_depth: 16
   log_level: INFO
   bg_color: 0x111827
-  text_font: font_large
+  text_font: font_xl  # default; the ha_autopanel C++ swaps to font_lg / font_md / font_sm for long room names
   # Flex layout is enabled by the ha_autopanel component's __init__.py
   # (it calls lvgl.defines.add_define("LV_USE_FLEX", "1") since the
   # lv_use_flex YAML key isn't part of the lvgl config schema). The
