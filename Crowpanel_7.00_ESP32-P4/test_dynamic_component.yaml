@@ -99,6 +99,30 @@ esp32:
       CONFIG_LWIP_UDP_RECVMBOX_SIZE: "64"
       CONFIG_LWIP_TCPIP_RECVMBOX_SIZE: "64"
       CONFIG_LWIP_TCP_SACK_OUT: y
+      # v1.22v: better crash diagnostics so we can identify
+      # the priority-inversion signature on the next crash
+      # (waiting task + holding task + the mutex/semaphore
+      # name). Without these the task-dump at panic only
+      # shows register state, not the inversion pair. See
+      # .claude/plans/greedy-discovering-koala.md for the
+      # full analysis.
+      #
+      # CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT halts instead of
+      # auto-rebooting on panic - we want a usable dump, not
+      # a rapid TWDT reboot. Test will need manual reset
+      # after the next crash.
+      CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT: y
+      # CONFIG_ESP32_PANIC_HANDLER_IRAM keeps the panic
+      # handler in IRAM so it can run even if the main
+      # flash/PSRAM is wedged.
+      CONFIG_ESP32_PANIC_HANDLER_IRAM: y
+      # CONFIG_FREERTOS_INTERRUPT_BACKTRACE prints the
+      # interrupt context in the task-dump on panic.
+      CONFIG_FREERTOS_INTERRUPT_BACKTRACE: y
+      # CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK catches
+      # stack overflow at the precise byte, which makes
+      # it obvious which task is over-running.
+      CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK: y
 
 psram:
   speed: 200MHz
@@ -136,16 +160,18 @@ api:
   homeassistant_states: true
   on_client_connected:
     - logger.log: "HA Connected!"
-    # Probe HA's authorization to perform service actions. If the device
-    # isn't allowed (the integration's "Allow Home Assistant actions"
-    # option is off, or the device hasn't been added to HA yet), the
-    # probe times out and the panel shows NOT_AUTHORIZED with a Retry
-    # button. If the probe succeeds, the panel stays in READY.
-    - delay: 1s
-    - lambda: 'id(dynamic_discovery).trigger_auth_probe();'
-    # Subscribe to state changes once the API is fully up.
-    - delay: 1s
-    - lambda: 'id(dynamic_discovery).trigger_subscription();'
+    # v1.22w: the auth probe + state subscription are now
+    # self-triggered by the C++ component (HaAutoPanel::loop()
+    # auto-detects the first API connect and queues both via
+    # pending flags, processed in subsequent loop ticks).
+    # The YAML lambdas that used to live here are gone - they
+    # allocated a std::function each invocation, and on a
+    # wedged C6 with a fragmented heap that allocation throw
+    # landed in the httpd worker context, which
+    # -fno-exceptions turned into abort() at PC 0x480dbxxx
+    # (see [[feedback_yaml_lambda_std_function_throw]] for
+    # the first live evidence at 12:21:05.762). The C++
+    # flag-based deferral is allocation-free in the hot path.
 
 # Built-in web server provides the underlying HTTP transport. ha_autopanel
 # registers its /autopanel setup form and /autopanel/save POST handler
@@ -342,6 +368,6 @@ ha_autopanel:
   # 12h time + weather.home (which 404s silently if the
   # user's HA doesn't have a weather.home entity).
   # use_24h_time: true
-  # weather_entity_id: "weather.forecast_home"
+  weather_entity_id: "weather.forecast_home"
 
 captive_portal:
