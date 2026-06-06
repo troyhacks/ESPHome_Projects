@@ -69,6 +69,36 @@ esp32:
     # option on every build.
     sdkconfig_options:
       CONFIG_ESP_TASK_WDT_TIMEOUT_S: "30"
+      # v1.22u: WiFi RMT (Radio Mgmt Task) buffer + AMPDU
+      # tuning for the ESP32-C6 wifi co-processor. The
+      # defaults (4 static RX / 32 dynamic RX / 16 dynamic TX)
+      # limit throughput on the P4 + C6 link. Bumping
+      # static to 16 and dynamic to 64/64 + 32-station BA
+      # windows matches the vendor IDF examples for similar
+      # 7" panel workloads and has been stable in testing.
+      CONFIG_WIFI_RMT_STATIC_RX_BUFFER_NUM: "16"
+      CONFIG_WIFI_RMT_DYNAMIC_RX_BUFFER_NUM: "64"
+      CONFIG_WIFI_RMT_DYNAMIC_TX_BUFFER_NUM: "64"
+      CONFIG_WIFI_RMT_AMPDU_TX_ENABLED: y
+      CONFIG_WIFI_RMT_TX_BA_WIN: "32"
+      CONFIG_WIFI_RMT_AMPDU_RX_ENABLED: y
+      CONFIG_WIFI_RMT_RX_BA_WIN: "32"
+      # v1.22u: LWIP TCP buffer tuning. The default TCP
+      # send window (16KB) is the bottleneck for the live
+      # state-poll bulk /api/states fetch (200KB+). The
+      # default TCP receive mailbox (6) DoSes when HA
+      # pushes 200+ entity state_changed events in a
+      # burst (e.g. on initial subscription). 65534 / 64 /
+      # 64 / 64 / SACK-out is what the IDF examples
+      # recommend for high-throughput HA clients and
+      # matches what the P4's 384KB internal heap can
+      # comfortably hold.
+      CONFIG_LWIP_TCP_SND_BUF_DEFAULT: "65534"
+      CONFIG_LWIP_TCP_WND_DEFAULT: "65534"
+      CONFIG_LWIP_TCP_RECVMBOX_SIZE: "64"
+      CONFIG_LWIP_UDP_RECVMBOX_SIZE: "64"
+      CONFIG_LWIP_TCPIP_RECVMBOX_SIZE: "64"
+      CONFIG_LWIP_TCP_SACK_OUT: y
 
 psram:
   speed: 200MHz
