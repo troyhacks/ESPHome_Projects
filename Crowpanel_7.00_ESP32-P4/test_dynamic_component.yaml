@@ -124,6 +124,13 @@ esp32:
       # corrupted backtrace from a __builtin_trap), revisit
       # the coredump partition idea then.
       # CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT: y
+      # v1.25c7+: enable FreeRTOS trace facility. Required for
+      # uxTaskGetSystemState() (and therefore the WLED-style
+      # task monitor's uxTaskGetSystemState() walk). Without
+      # this, the function exists in headers but isn't compiled
+      # into the freertos component -> undefined reference at
+      # link time.
+      CONFIG_FREERTOS_USE_TRACE_FACILITY: y
       # CONFIG_ESP32_PANIC_HANDLER_IRAM keeps the panic
       # handler in IRAM so it can run even if the main
       # flash/PSRAM is wedged.
