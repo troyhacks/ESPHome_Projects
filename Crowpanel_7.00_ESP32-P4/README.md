@@ -97,3 +97,48 @@ to hide, display overrides, default brightness — is configured via
 the on-device web UI at `http://<device-ip>/autopanel` and stored in
 LittleFS at `/storage/autopanel.cfg`. No recompile needed to set up
 a new panel.
+
+## v1.24 highlights (WebSocket-native state sync)
+
+The state-sync path was rewritten in v1.24 to use Home
+Assistant's raw WebSocket API (`ws://<ha>/api/websocket`)
+instead of the esphome-native-API
+`subscribe_home_assistant_state`. The old path triggered
+a `PC 0x480dxxxx` abort ~300 ms after Panel READY (200+
+`std::function` allocations in the httpd worker context
+under heap pressure). The new path:
+
+- Opens a raw WebSocket to HA on boot
+- Sends HA's native `get_states` + `subscribe_events`
+  messages for one-time bulk + live updates
+- Uses a 1 MB pre-allocated PSRAM pool for the 229 KB
+  `get_states` JSON parse (eliminates heap-lock contention
+  with the SDIO RX task that was triggering
+  `sdio_drv.c:1260 copy_payload` asserts)
+- No more `std::function` allocations on the hot path
+
+After ~2 hours of continuous run on the panel: 249+
+`state_changed` events received, no aborts, no SDIO
+asserts. See
+`PROJECT_KNOWLEDGE.md` (and the v1.24 commit messages in
+`../esphome_dynamic_entity_discovery`) for the full
+changelog.
+
+### Known v1.24 issues (v1.25 follow-up)
+
+- **Cold-boot NOT_AUTHORIZED on first boot.** Fix landed
+  in v1.24 commit 7: `AUTH_PROBE_TIMEOUT_MS` 5s → 15s,
+  plus 3 auto-retries at 5 s intervals. The Retry
+  button still works as a manual escape hatch.
+- **httpd worker stack overflow** on the bft.py stress
+  test (full 12-test suite: clicks, drag, screen
+  changes, screenshots). Add
+  `CONFIG_HTTPD_DEFAULT_TASK_STACK_SIZE: "16384"` to
+  `test_dynamic_component.yaml` sdkconfig_options to fix.
+  Not applied yet because the v1.24 sdkmconfig tuning
+  was lost in a build-env wipe; needs the user to
+  re-apply.
+- **Dead code from v1.22w-v1.22v** (subscription machinery,
+  bulk fetch, polls) is still in the source. The functions
+  are unreachable; the members/structs/constants are
+  unused. Plan to delete in a v1.24+ cleanup pass.
