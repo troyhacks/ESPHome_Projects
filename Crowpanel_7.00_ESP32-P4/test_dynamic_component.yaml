@@ -110,11 +110,20 @@ esp32:
       # .claude/plans/greedy-discovering-koala.md for the
       # full analysis.
       #
-      # CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT halts instead of
-      # auto-rebooting on panic - we want a usable dump, not
-      # a rapid TWDT reboot. Test will need manual reset
-      # after the next crash.
-      CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT: y
+      # v1.25c7+: CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT is OFF
+      # (commented out). Previously enabled during the v1.22v
+      # debugging to freeze the device so a human could read
+      # the panic dump over serial. Disabled now because:
+      #   - the WLED-style task monitor logs the pre-crash
+      #     state transitions to flash (persistent across reboot)
+      #   - a wall-mounted panel that requires physical reset
+      #     after every crash is bad UX
+      #   - we have the WLED monitor + boot counter + reset_reason
+      #     to reconstruct the crash sequence after auto-reboot
+      # If a future crash produces a useless panic dump (e.g.
+      # corrupted backtrace from a __builtin_trap), revisit
+      # the coredump partition idea then.
+      # CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT: y
       # CONFIG_ESP32_PANIC_HANDLER_IRAM keeps the panic
       # handler in IRAM so it can run even if the main
       # flash/PSRAM is wedged.
