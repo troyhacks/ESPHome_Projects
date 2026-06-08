@@ -19,7 +19,10 @@ esphome:
   # resolution step also runs `git rev-parse` to find the
   # project version; we ran into 'fatal: not a git repository'
   # errors when the project is heavy on add_idf_component()
-  # calls. If that returns, init a git repo in C:/esphome_tdd.
+  # calls. C:/esphome_tdd is set up as a permanent git repo by
+  # ./bootstrap-build.ps1 in this dir - run that script (not
+  # `git init` by hand) if the IDF ever says the build dir is
+  # not a git repo. See BUILD.md for the simple workflow.
   build_path: C:/esphome_tdd
   environment_variables:
     PLATFORMIO_CORE_DIR: "C:/esphome_tdd"
