@@ -1,0 +1,397 @@
+# Minimum-boot config for the Waveshare ESP32-P4-WIFI6-Touch-LCD-10.1
+# (800x1280 portrait, MIPI-DSI). This is a stripped-down single-file
+# variation of Crowpanel_7.00_ESP32-P4/test_dynamic_component.yaml, with
+# the modular esphome-modular-lvgl-buttons packages inlined and the
+# MDI-glyph button grid removed. The ha_autopanel test framework
+# (external_components + agent_debug endpoints) is preserved so
+# bft.py / run_tests.py can still drive the panel headlessly.
+#
+# Original modular source:
+#   https://github.com/agillis/esphome-modular-lvgl-buttons/blob/5f6e9e7472edda23ea16e3d58d5e9b389d169888/example_code/waveshare-esp32-p4-wifi6-touch-lcd-10.1_display_modular.yaml
+# Hardware package sourced from:
+#   hardware/waveshare-esp32-p4-wifi6-touch-lcd-10.1.yaml
+# (Audio block — ES8311 DAC, ES7210 ADC, voice assistant — dropped:
+#  not required to bring up the panel.)
+
+substitutions:
+  friendly_name: waveshare-p4-10-min
+
+esphome:
+  name: waveshare-p4-10-min
+  friendly_name: ${friendly_name}
+  # build_path at C:/esphome_td2 is OUTSIDE the project so the
+  # absolute paths to the source files are short - the linker
+  # command line on Windows can otherwise exceed the 32k char
+  # CreateProcess limit ("command line too long" error from
+  # idf.py at link time). The recommended fix is
+  # `-Wl,--use-response-file` but that requires patching the
+  # IDF build system, not exposed via ESPHome YAML. Keeping
+  # the build path short works around it. The dependency-
+  # resolution step also runs `git rev-parse` to find the
+  # project version; we ran into 'fatal: not a git repository'
+  # errors when the project is heavy on add_idf_component()
+  # calls. C:/esphome_td2 is set up as a permanent git repo by
+  # ./bootstrap-build.ps1 in the Crowpanel project - run that
+  # script (not `git init` by hand) if the IDF ever says the
+  # build dir is not a git repo.
+  build_path: C:/esphome_td2
+  environment_variables:
+    PLATFORMIO_CORE_DIR: "C:/esphome_td2"
+    # PLATFORMIO_HOME_DIR: "C:/esphome_td2/.home"
+    # PLATFORMIO_PACKAGES_DIR: "C:/esphome_td2/.packages"
+    PLATFORMIO_CACHE_DIR: "C:/esphome_td2/.cache"
+    # PLATFORMIO_PLATFORMS_DIR: "C:/esphome_td2/.platforms"
+  min_version: 2026.1.0
+  on_boot:
+    priority: -1000
+    then:
+      - logger.log: "Backlight ON"
+      - output.turn_on: gpio_backlight_pwm
+    #   - delay: 200ms
+    #   - light.turn_on:
+    #       id: display_backlight
+    #       brightness: 1
+
+esp32:
+  variant: esp32p4
+  engineering_sample: true
+  cpu_frequency: 360MHz
+  flash_size: 32MB
+  partitions: partitions.csv
+  framework:
+    type: esp-idf
+    advanced:
+      enable_idf_experimental_features: true
+    # v1.22q: bump the IDF freeRTOS task watchdog (TWDT)
+    # timeout from 5s (default) to 30s. The 5s default is
+    # too aggressive for the P4 + ESP32-C6 wifi co-processor
+    # setup - the SDIO link occasionally takes 6-8 seconds
+    # to recover from a transient. With a 5s timeout, any
+    # wifi hiccup trips the TWDT and the panel reboots
+    # itself (rst:0xc SW_CPU_RESET). 30s gives the SDIO
+    # driver plenty of slack while still catching real
+    # hangs. This is idempotent: ESPHome re-emits the
+    # sdkconfig option on every build.
+    sdkconfig_options:
+      CONFIG_ESP_TASK_WDT_TIMEOUT_S: "30"
+      # v1.22u: WiFi RMT (Radio Mgmt Task) buffer + AMPDU
+      # tuning for the ESP32-C6 wifi co-processor. The
+      # defaults limit throughput on the P4 + C6 link.
+      # Bumping static to 16 and dynamic to 64/64 + 32-
+      # station BA windows matches the vendor IDF examples
+      # for similar 7-10" panel workloads and has been
+      # stable in Crowpanel testing.
+      CONFIG_WIFI_RMT_STATIC_RX_BUFFER_NUM: "16"
+      CONFIG_WIFI_RMT_DYNAMIC_RX_BUFFER_NUM: "64"
+      CONFIG_WIFI_RMT_DYNAMIC_TX_BUFFER_NUM: "64"
+      CONFIG_WIFI_RMT_AMPDU_TX_ENABLED: y
+      CONFIG_WIFI_RMT_TX_BA_WIN: "32"
+      CONFIG_WIFI_RMT_AMPDU_RX_ENABLED: y
+      CONFIG_WIFI_RMT_RX_BA_WIN: "32"
+      # v1.22u: LWIP TCP buffer tuning. The default TCP
+      # send window (16KB) is the bottleneck for the live
+      # state-poll bulk /api/states fetch (200KB+). The
+      # default TCP receive mailbox (6) DoSes when HA
+      # pushes 200+ entity state_changed events in a burst.
+      CONFIG_LWIP_TCP_SND_BUF_DEFAULT: "65534"
+      CONFIG_LWIP_TCP_WND_DEFAULT: "65534"
+      CONFIG_LWIP_TCP_RECVMBOX_SIZE: "64"
+      CONFIG_LWIP_UDP_RECVMBOX_SIZE: "64"
+      CONFIG_LWIP_TCPIP_RECVMBOX_SIZE: "64"
+      CONFIG_LWIP_TCP_SACK_OUT: y
+      # v1.25c7+: enable FreeRTOS trace facility. Required
+      # for uxTaskGetSystemState() (the WLED-style task
+      # monitor's pre-crash state walk).
+      CONFIG_FREERTOS_USE_TRACE_FACILITY: y
+      # Keeps the panic handler in IRAM so it can run even
+      # if the main flash/PSRAM is wedged.
+      CONFIG_ESP32_PANIC_HANDLER_IRAM: y
+      # Prints the interrupt context in the task-dump on
+      # panic.
+      CONFIG_FREERTOS_INTERRUPT_BACKTRACE: y
+      # Catches stack overflow at the precise byte, which
+      # makes it obvious which task is over-running.
+      CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK: y
+
+psram:
+  mode: hex
+  speed: 200MHz
+
+# preferences:
+#   flash_write_interval: 5min
+
+esp_ldo:
+  - channel: 3
+    voltage: 2.5V
+  - channel: 4
+    voltage: 2.5V
+
+esp32_hosted:
+  variant: ESP32C6
+  reset_pin: GPIO54
+  cmd_pin: GPIO19
+  clk_pin: GPIO18
+  d0_pin: GPIO14
+  d1_pin: GPIO15
+  d2_pin: GPIO16
+  d3_pin: GPIO17
+  active_high: true
+  # v1.22x: lower SDIO frequency 20MHz -> 10MHz. The
+  # 20MHz default can cause sdio_rx_get_buffer() to assert
+  # in sdio_drv.c:896 when the host drains the SDIO ring
+  # buffer too slowly during a 200KB+ bulk /api/states
+  # transfer. 10MHz gives the host ~2x more time per
+  # buffer. This is the same P4 + C6 architecture as the
+  # Crowpanel, so the workaround is the safe default until
+  # 10.1"-specific testing shows it isn't needed.
+  sdio_frequency: 10MHz
+
+logger:
+  hardware_uart: UART0
+  level: INFO
+
+api:
+  encryption:
+    key: !secret encryption_key
+  # Required for ha_autopanel to call HA services (light.turn_on/off,
+  # switch.toggle) and subscribe to state_changed events. Without these
+  # the C++ component won't link.
+  homeassistant_services: true
+  homeassistant_states: true
+  on_client_connected:
+    - logger.log: "HA Connected!"
+
+# Built-in web server provides the underlying HTTP transport. ha_autopanel
+# registers its /autopanel setup form and /autopanel/save POST handler
+# against this base. The panel UI is not served here; it's drawn on the
+# LVGL display.
+web_server:
+  port: 80
+
+ota:
+  - platform: esphome
+
+# Time source for the title bar clock. SNTP works on most networks.
+# The Crowpanel's homeassistant time source triggeres a git-context
+# dependency-resolution error in the IDF build when the build dir
+# isn't itself a git repo, so SNTP is the safe minimum.
+time:
+  - platform: sntp
+    id: sntp_time
+    servers:
+      - 0.pool.ntp.org
+      - time.google.com
+      - time.cloudflare.com
+    timezone: "America/New_York"
+    on_time_sync:
+      then:
+        - logger.log: "NTP time synced"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: !secret my_ap_password
+  on_connect:
+    then:
+      - delay: 1s
+      - logger.log: "WiFi connected, triggering dynamic discovery..."
+      - lambda: 'id(dynamic_discovery).trigger_discovery();'
+
+i2c:
+  - id: bus_a
+    sda: GPIO07
+    scl: GPIO08
+    frequency: 400kHz
+    scan: true
+
+output:
+  - platform: ledc
+    pin: GPIO26
+    id: gpio_backlight_pwm
+    inverted: false
+    frequency: 1000Hz
+
+# light:
+#   - platform: monochromatic
+#     name: "Display Backlight"
+#     output: gpio_backlight_pwm
+#     id: display_backlight
+#     restore_mode: ALWAYS_ON
+#     default_transition_length: 250ms
+
+http_request:
+  id: ha_http
+
+touchscreen:
+  - platform: gt911
+    id: my_touchscreen
+    i2c_id: bus_a
+    # BSP says LCD_TOUCH_INT = GPIO_NUM_NC: the GT911 has no INT pin on
+    # this board, so ESPHome must poll it. update_interval: 50ms gives
+    # 20Hz touch sampling, which is enough for drags + on-screen
+    # keyboards (the default 'never' reads on-demand only).
+    update_interval: 50ms
+    # Touch transform: ALL FALSE.
+    #
+    # The natural assumption is that rotating the display 270 deg also
+    # needs the GT911 to be told swap_xy + mirror combos, but that's
+    # WRONG for ESPHome + LVGL. The two transforms serve different
+    # purposes and COMPOSE:
+    #
+    #   1. GT911 transform (this block): compensates for the GT911's
+    #      own physical orientation on the PCB - i.e. whether the chip
+    #      is rotated, mirrored, or has its X/Y axes swapped relative
+    #      to the panel. For the Waveshare 10.1" board the GT911
+    #      matches the panel's portrait orientation natively, so all
+    #      three are false.
+    #
+    #   2. LVGL rotation: handles the display-to-canvas rotation, and
+    #      AUTOMATICALLY remaps touch coordinates to match. See
+    #      LvglComponent::rotate_coordinates() in lvgl_esphome.cpp -
+    #      it's called from the LVTouchListener's read callback right
+    #      after the GT911 transform is applied. With rotation: 270,
+    #      the cpp does:
+    #          x = canvas_height - y - 1
+    #          y = x
+    #      which is exactly the coordinate remap needed to go from
+    #      GT911's (gx, gy) in panel-native 800x1280 to the LVGL
+    #      canvas's 1280x800.
+    #
+    # If you set a transform here AND set lvgl.rotation, the two
+    # compose (NOT cancel), and you'll get a doubled-up rotation -
+    # which is why an earlier swap_xy + mirror pair produced 180 deg
+    # off diagonal-corner touches. Leave this all-false unless the
+    # GT911's physical orientation is genuinely different from the
+    # panel's (e.g. some 3rd-party panels mount the GT911 rotated 90
+    # on the flex).
+    transform:
+      swap_xy: false
+      mirror_x: false
+      mirror_y: false
+
+display:
+  - platform: mipi_dsi
+    id: main_display
+    model: WAVESHARE-P4-NANO-10.1
+    # BSP says BSP_LCD_RST = GPIO_NUM_27. The mipi_dsi component only
+    # tries a software reset (SW_RESET_CMD over DSI) if reset_pin is
+    # unset, and the JD9365 panel doesn't ack DCS commands without a
+    # hardware reset first - which is what was hanging loopTask in
+    # mipi_dsi_hal_host_gen_write_dcs_command and tripping the WDT.
+    reset_pin: GPIO27
+    update_interval: never
+    auto_clear_enabled: false
+    # color_order: RGB
+    # color_depth: 16
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_xl
+    size: 28
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_lg
+    size: 24
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_md
+    size: 20
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_sm
+    size: 16
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_button
+    size: 14
+    bpp: 4
+
+lvgl:
+  byte_order: little_endian
+  displays:
+    - main_display
+  touchscreens:
+    - my_touchscreen
+  # Landscape: physical panel stays 800x1280 (portrait scanout) but
+  # the LVGL canvas is rotated 270 deg so it appears as 1280x800 to
+  # widgets. (Tried 90 first; that came up upside-down relative to
+  # the panel's bezel orientation, so the 90 deg clockwise software
+  # rotation is fighting the 90 deg counter-clockwise physical mount.
+  # 270 fixes it.) rotation MUST live on the lvgl config when LVGL
+  # owns the display (mipi_dsi display-level rotation is rejected
+  # by the lvgl validator with "use of 'rotation' in the display
+  # config is not compatible with LVGL, please set rotation in the
+  # LVGL config instead").
+  rotation: 270
+  buffer_size: 100%
+  full_refresh: true
+  # color_depth: 16
+  log_level: INFO
+  bg_color: 0x111827
+  text_font: font_xl  # default; the ha_autopanel C++ swaps to font_lg / font_md / font_sm for long room names
+  # Flex layout is enabled by the ha_autopanel component's __init__.py
+  # (it calls lvgl.defines.add_define("LV_USE_FLEX", "1") since the
+  # lv_use_flex YAML key isn't part of the lvgl config schema). The
+  # title-bar right cluster and the room-card rows both use
+  # lv_obj_set_flex_flow so the layout reflows across screen widths.
+  widgets:
+    # Widgets needed by ha_autopanel
+    - arc: {}
+    - label: {}
+
+external_components:
+  - source:
+      type: local
+      path: C:/ESPHome_Projects/esphome_dynamic_entity_discovery/components
+    components: [ha_autopanel]
+
+ha_autopanel:
+  id: dynamic_discovery
+  # ha_api_url and ha_api_password are still required here for now,
+  # but in the no-code vision they will move to LittleFS and be set
+  # via the /autopanel web form.
+  ha_api_url: "http://homeassistant.local:8123"
+  ha_api_password: !secret my_ha_api_password
+  http_request_ref: ha_http
+  # Wire the title bar clock to the SNTP time source. The id has
+  # to match the `id:` in the `time:` block above.
+  time_ref: sntp_time
+  # 10.1" panel is physically 800x1280 portrait, but the display
+  # is rotated 90 deg above (see display.rotation), so the LVGL
+  # canvas the C++ sees is 1280x800 landscape. ha_autopanel uses
+  # screen_width/height for the flex layout, so they MUST match
+  # the rotated canvas, not the physical panel.
+  # 256px card + 8px gap: 4 cards per row = 1048 (leaves 232px
+  # of slack that flex will center); 5 cards = 1312 (overflows).
+  # ha_autopanel auto-fits via lv_obj_set_flex_flow.
+  card_width: 256
+  card_gap: 8
+  screen_width: 1280
+  screen_height: 800
+  start_x: 0
+  start_y: 40
+  default_on_pct: 30
+  # AGENT_DEBUG: opt-in switch that exposes /autopanel/test/* HTTP
+  # endpoints (click, scroll, cmd, state) and /autopanel/screenshot.jpg.
+  # The test harness uses these to drive the panel without holding the
+  # serial port. Default in the component is false; flipped to true
+  # in this test config so bft.py / run_tests.py can hit the test API.
+  # Production yml should leave it at the default.
+  agent_debug: true
+  weather_entity_id: "weather.forecast_home"
+  # enable_stuck_task_recovery: defaults to false. The user
+  # wants visibility first, recovery second. The C6 reset
+  # GPIO is wired in the C++ side but the knob stays off
+  # in this test yaml because the 5s eBlocked threshold
+  # fired on every boot during v1.22y testing - normal C6
+  # init takes 5-10s. With the 30s threshold (v1.22z), the
+  # recovery is more conservative, but the default is
+  # still off. Flip to true to enable the graduated
+  # recovery sequence (log -> drop httpd worker priority
+  # -> C6 reset via GPIO54 on this 10.1" board -> App.reboot
+  # after 3 recoveries in a window).
+  # enable_stuck_task_recovery: true
+
+captive_portal:
