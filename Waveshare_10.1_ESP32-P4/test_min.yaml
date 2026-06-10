@@ -162,7 +162,13 @@ esp32_hosted:
   # buffer. This is the same P4 + C6 architecture as the
   # Crowpanel, so the workaround is the safe default until
   # 10.1"-specific testing shows it isn't needed.
-  # sdio_frequency: 10MHz
+  # v1.27 re-enabled: tested alone, 10MHz didn't help. Tested
+  # together with CONFIG_ESP_SYSTEM_MEM_FRAGMENTATION_HARDENING=y
+  # below, the combined treatment gives SDIO both a longer
+  # clock period and a reserved DMA pool, which together
+  # address both the timing side and the allocation side of
+  # the same crash (sdio_push_data_to_queue assert).
+  sdio_frequency: 10MHz
 
 logger:
   hardware_uart: UART0
