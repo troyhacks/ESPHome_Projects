@@ -14,11 +14,12 @@
 #  not required to bring up the panel.)
 
 substitutions:
-  friendly_name: waveshare-p4-10-min
+  device_name: waveshare-p4-10-min
+  build_root: C:/
 
 esphome:
-  name: waveshare-p4-10-min
-  friendly_name: ${friendly_name}
+  name: ${device_name}
+  friendly_name: ${device_name}
   # build_path at C:/esphome_td2 is OUTSIDE the project so the
   # absolute paths to the source files are short - the linker
   # command line on Windows can otherwise exceed the 32k char
@@ -34,13 +35,20 @@ esphome:
   # ./bootstrap-build.ps1 in the Crowpanel project - run that
   # script (not `git init` by hand) if the IDF ever says the
   # build dir is not a git repo.
-  build_path: C:/esphome_td2
+  #
+  # v2: build_path is now per-device (${build_root}/${device_name}) so
+  # multiple devices can compile in parallel without trampling each
+  # other's .pioenvs. Substitution scope is built from the
+  # `substitutions:` block + CLI overrides only -- `name` is NOT
+  # auto-seeded, which is why we have `device_name` here as the
+  # single source of truth.
+  build_path: ${build_root}/${device_name}
   environment_variables:
-    PLATFORMIO_CORE_DIR: "C:/esphome_td2"
-    # PLATFORMIO_HOME_DIR: "C:/esphome_td2/.home"
-    # PLATFORMIO_PACKAGES_DIR: "C:/esphome_td2/.packages"
-    PLATFORMIO_CACHE_DIR: "C:/esphome_td2/.cache"
-    # PLATFORMIO_PLATFORMS_DIR: "C:/esphome_td2/.platforms"
+    PLATFORMIO_CORE_DIR: "${build_root}/${device_name}"
+    # PLATFORMIO_HOME_DIR: "${build_root}/${device_name}/.home"
+    # PLATFORMIO_PACKAGES_DIR: "${build_root}/${device_name}/.packages"
+    PLATFORMIO_CACHE_DIR: "${build_root}/${device_name}/.cache"
+    # PLATFORMIO_PLATFORMS_DIR: "${build_root}/${device_name}/.platforms"
   min_version: 2026.1.0
   on_boot:
     priority: -1000
@@ -112,6 +120,16 @@ esp32:
       # Catches stack overflow at the precise byte, which
       # makes it obvious which task is over-running.
       CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK: y
+      # P4+C6 SDIO wedge fix: reserve an internal-SRAM DMA
+      # pool so the SDIO driver can always satisfy
+      # sdio_push_data_to_queue's buffer alloc even when
+      # the general heap is fragmented. The sdio assert at
+      # sdio_drv.c:896 / 928 was firing ~20s into boot
+      # because tlsf_malloc couldn't find a contiguous
+      # DMA-capable slot for an inbound RPC packet. The
+      # hardening mode carves out a reserved pool that
+      # SDIO / crypto / DMA ops can fall back to.
+      CONFIG_ESP_SYSTEM_MEM_FRAGMENTATION_HARDENING: y
 
 psram:
   mode: hex
@@ -144,7 +162,7 @@ esp32_hosted:
   # buffer. This is the same P4 + C6 architecture as the
   # Crowpanel, so the workaround is the safe default until
   # 10.1"-specific testing shows it isn't needed.
-  sdio_frequency: 10MHz
+  # sdio_frequency: 10MHz
 
 logger:
   hardware_uart: UART0
@@ -191,7 +209,7 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   ap:
-    ssid: "${friendly_name} Fallback"
+    ssid: "${device_name} Fallback"
     password: !secret my_ap_password
   on_connect:
     then:
@@ -224,6 +242,24 @@ output:
 http_request:
   id: ha_http
 
+# update:
+#   - platform: esp32_hosted
+#     type: http
+#     name: ESP32-C6 Coprocessor
+#     source: https://esphome.github.io/esp-hosted-firmware/manifest/esp32c6.json
+#     update_interval: 6h
+#     # setup_priority reference (higher = earlier in boot):
+#     #   1000 BUS  (i2c/spi)         350 BLUETOOTH
+#     #    900 IO   (PCF8574)         250 WIFI
+#     #    800 HARDWARE (gpio)        220 BEFORE_CONNECTION  <-- this
+#     #    600 DATA  (default)        200 AFTER_WIFI (api, http_request, ota)
+#     #    400 PROCESSOR (display)    100 AFTER_CONNECTION
+#     #                              -100 LATE
+#     # 220 = WiFi is up, but the API handshake hasn't started yet.
+#     # The manifest GET fires before api::setup runs, and well before
+#     # mipi_dsi / LVGL / web_server come up.
+#     setup_priority: 220
+    
 touchscreen:
   - platform: gt911
     id: my_touchscreen
@@ -349,6 +385,7 @@ external_components:
 
 ha_autopanel:
   id: dynamic_discovery
+  setup_priority: -2000  # after WiFi (600) and http_request, before mipi_dsi / LVGL (900+)
   # ha_api_url and ha_api_password are still required here for now,
   # but in the no-code vision they will move to LittleFS and be set
   # via the /autopanel web form.
