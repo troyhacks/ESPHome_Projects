@@ -248,23 +248,26 @@ output:
 http_request:
   id: ha_http
 
-# update:
-#   - platform: esp32_hosted
-#     type: http
-#     name: ESP32-C6 Coprocessor
-#     source: https://esphome.github.io/esp-hosted-firmware/manifest/esp32c6.json
-#     update_interval: 6h
-#     # setup_priority reference (higher = earlier in boot):
-#     #   1000 BUS  (i2c/spi)         350 BLUETOOTH
-#     #    900 IO   (PCF8574)         250 WIFI
-#     #    800 HARDWARE (gpio)        220 BEFORE_CONNECTION  <-- this
-#     #    600 DATA  (default)        200 AFTER_WIFI (api, http_request, ota)
-#     #    400 PROCESSOR (display)    100 AFTER_CONNECTION
-#     #                              -100 LATE
-#     # 220 = WiFi is up, but the API handshake hasn't started yet.
-#     # The manifest GET fires before api::setup runs, and well before
-#     # mipi_dsi / LVGL / web_server come up.
-#     setup_priority: 220
+update:
+  - platform: esp32_hosted
+    type: http
+    name: ESP32-C6 Coprocessor
+    source: https://esphome.github.io/esp-hosted-firmware/manifest/esp32c6.json
+    update_interval: 6h
+    # setup_priority reference (higher = earlier in boot):
+    #   1000 BUS  (i2c/spi)         350 BLUETOOTH
+    #    900 IO   (PCF8574)         250 WIFI
+    #    800 HARDWARE (gpio)        220 BEFORE_CONNECTION  <-- this
+    #    600 DATA  (default)        200 AFTER_WIFI (api, http_request, ota)
+    #    400 PROCESSOR (display)    100 AFTER_CONNECTION
+    #                              -100 LATE
+    # 220 = WiFi is up, but the API handshake hasn't started yet.
+    # The manifest GET fires before api::setup runs, and well before
+    # mipi_dsi / LVGL / web_server come up. The component itself is
+    # silent at INFO (only the OTA download logs) so it's harmless to
+    # have it boot this early - check the HA entity for status, not
+    # the serial log. See feedback_esp32_hosted_update_silent.md.
+    setup_priority: 220
     
 touchscreen:
   - platform: gt911
