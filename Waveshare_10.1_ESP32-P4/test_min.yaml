@@ -44,11 +44,8 @@ esphome:
   # single source of truth.
   build_path: ${build_root}/${device_name}
   environment_variables:
+    PLATFORMIO_WORKSPACE_DIR: "${build_root}/${device_name}"
     PLATFORMIO_CORE_DIR: "${build_root}/${device_name}"
-    # PLATFORMIO_HOME_DIR: "${build_root}/${device_name}/.home"
-    # PLATFORMIO_PACKAGES_DIR: "${build_root}/${device_name}/.packages"
-    PLATFORMIO_CACHE_DIR: "${build_root}/${device_name}/.cache"
-    # PLATFORMIO_PLATFORMS_DIR: "${build_root}/${device_name}/.platforms"
   min_version: 2026.1.0
   on_boot:
     priority: -1000
@@ -130,6 +127,26 @@ esp32:
       # hardening mode carves out a reserved pool that
       # SDIO / crypto / DMA ops can fall back to.
       CONFIG_ESP_SYSTEM_MEM_FRAGMENTATION_HARDENING: y
+      # v1.28: route malloc() to PSRAM. P4 hex-mode PSRAM at
+      # 200MHz is comfortably fast for heap traffic (no
+      # perceptible UI or parse slowdown on the 25KB aggregate
+      # JSON). The payoff: every default-allocator allocation
+      # - std::string temporaries in ArduinoJson's
+      # JsonDeserializer::parseObject, std::string copies
+      # from as<std::string>(), the small std::strings in
+      # Entity::state before we migrated to psram_string,
+      # etc. - lands in PSRAM instead of the 384KB internal
+      # heap. With this on, the cxx_exception_stubs aborts
+      # from internal-RAM OOM in std::bad_alloc go away
+      # without us having to convert every remaining
+      # std::string field in ha_autopanel. DMA-capable
+      # allocations stay in internal SRAM because they
+      # explicitly request MALLOC_CAP_INTERNAL via
+      # heap_caps_malloc, which this option doesn't change.
+      # See project_psram_allocator_naming and the
+      # arduinojson.org/v7/how-to/use-external-ram-on-esp32
+      # writeup.
+      CONFIG_SPIRAM_USE_MALLOC: y
 
 psram:
   mode: hex
@@ -168,7 +185,7 @@ esp32_hosted:
   # clock period and a reserved DMA pool, which together
   # address both the timing side and the allocation side of
   # the same crash (sdio_push_data_to_queue assert).
-  sdio_frequency: 10MHz
+  # sdio_frequency: 10MHz
 
 logger:
   hardware_uart: UART0
@@ -248,26 +265,17 @@ output:
 http_request:
   id: ha_http
 
-update:
-  - platform: esp32_hosted
-    type: http
-    name: ESP32-C6 Coprocessor
-    source: https://esphome.github.io/esp-hosted-firmware/manifest/esp32c6.json
-    update_interval: 6h
-    # setup_priority reference (higher = earlier in boot):
-    #   1000 BUS  (i2c/spi)         350 BLUETOOTH
-    #    900 IO   (PCF8574)         250 WIFI
-    #    800 HARDWARE (gpio)        220 BEFORE_CONNECTION  <-- this
-    #    600 DATA  (default)        200 AFTER_WIFI (api, http_request, ota)
-    #    400 PROCESSOR (display)    100 AFTER_CONNECTION
-    #                              -100 LATE
-    # 220 = WiFi is up, but the API handshake hasn't started yet.
-    # The manifest GET fires before api::setup runs, and well before
-    # mipi_dsi / LVGL / web_server come up. The component itself is
-    # silent at INFO (only the OTA download logs) so it's harmless to
-    # have it boot this early - check the HA entity for status, not
-    # the serial log. See feedback_esp32_hosted_update_silent.md.
-    setup_priority: 220
+# update:
+#   - platform: esp32_hosted
+#     type: http
+#     name: ESP32-C6 Coprocessor
+#     source: https://esphome.github.io/esp-hosted-firmware/manifest/esp32c6.json
+#     update_interval: 6h
+#     # DIAGNOSTIC: temporarily disabled to isolate C6 wifi wedge.
+#     # The manifest fetch hits esphome.github.io at boot via the
+#     # C6 wifi, which is suspected of contributing to the SDIO
+#     # wedge. Re-enable once the wedge is identified & fixed.
+#     setup_priority: 220
     
 touchscreen:
   - platform: gt911
