@@ -1,0 +1,86 @@
+packages:
+  voice: !include waveshare-speaker-box-voice.yaml
+
+# ─── Simple shape-based UI (no image assets) ───
+lvgl:
+  displays:
+    - main_lcd
+  touchscreens:
+    - touch
+  pages:
+    - id: main_page
+      bg_color: 0x111122
+      widgets:
+
+        # ── Full-screen tap-to-wake (draw FIRST so it's behind everything) ──
+        - obj:
+            id: tap_area
+            x: 0
+            y: 0
+            width: 360
+            height: 360
+            bg_opa: 0
+            clickable: false
+            on_click:
+              then:
+                - micro_wake_word.start
+
+        # ── Center: State label ──
+        - label:
+            id: state_label
+            x: 0
+            y: 120
+            width: 360
+            align: CENTER
+            text: "IDLE"
+            color: 0x44FF44
+            text_font: sansserif_36
+
+        # ── Top-right: Mute button ──
+        - button:
+            id: mute_btn
+            x: 260
+            y: 10
+            width: 90
+            height: 44
+            radius: 8
+            bg_color: 0x333344
+            on_click:
+              then:
+                - voice_assistant.stop
+            widgets:
+              - label:
+                  id: mute_label
+                  align: CENTER
+                  text: "MIC ON"
+                  color: 0x44FF44
+
+        # ── Bottom: Volume slider ──
+        - slider:
+            id: vol_slider
+            x: 40
+            y: 260
+            width: 280
+            height: 36
+            min_value: 50
+            max_value: 100
+            value: 80
+            bg_color: 0x333344
+            fg_color: 0x4488FF
+            knob_color: 0x88BBFF
+            radius: 10
+            on_value_changed:
+              then:
+                - lambda: |-
+                    auto vol = static_cast<int>(id(vol_slider).value);
+                    id(speaker_media_player).set_volume(vol / 100.0);
+
+        # ── Volume label ──
+        - label:
+            id: vol_label
+            x: 0
+            y: 230
+            width: 360
+            align: CENTER
+            text: "Volume"
+            color: 0x666677

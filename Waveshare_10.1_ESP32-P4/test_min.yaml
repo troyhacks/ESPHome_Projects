@@ -384,16 +384,15 @@ lvgl:
   log_level: INFO
   bg_color: 0x111827
   text_font: font_xl  # default; the ha_autopanel C++ swaps to font_lg / font_md / font_sm for long room names
-  # Flex layout is enabled by the ha_autopanel component's __init__.py
-  # (it calls lvgl.defines.add_define("LV_USE_FLEX", "1") since the
-  # lv_use_flex YAML key isn't part of the lvgl config schema). The
-  # title-bar right cluster and the room-card rows both use
-  # lv_obj_set_flex_flow so the layout reflows across screen widths.
+  # Widgets needed by ha_autopanel's default title bar and card styles.
+  # Removing them breaks build - so just set what you need.
+  # "hidden:true" makes them invisible on boot but keeps them linked in. 
   widgets:
-    # Widgets needed by ha_autopanel
-    - arc: {}
-    - label: {}
-
+    - arc:
+        hidden: true
+    - label:
+        hidden: true
+      
 external_components:
   - source:
       type: local
