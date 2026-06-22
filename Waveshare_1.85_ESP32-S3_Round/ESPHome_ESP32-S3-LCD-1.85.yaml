@@ -1,3 +1,5 @@
+# WORKING ON MY HARDWARE
+
 substitutions:
   device_name: WaveShare_1.85_S3_Round
   build_root: C:/
@@ -104,7 +106,7 @@ time:
         pcf85063.write_time:
 psram:
   mode: octal
-  speed: 120MHz
+  # speed: 120MHz # 120MHz does not work on this device.
 
 
 sensor:
@@ -232,6 +234,7 @@ binary_sensor:
   - platform: gpio
     pin:
       number: GPIO0
+      ignore_strapping_warning: true
       mode: INPUT_PULLUP
       inverted: true
     name: "Boot Button"
@@ -304,7 +307,6 @@ spi:
   type: quad
   clk_pin: GPIO40
   data_pins: [GPIO46, GPIO45, GPIO42, GPIO41]
-
 
 touchscreen:
   platform: cst816
