@@ -1,0 +1,831 @@
+# =============================================================================
+#  LilyGo T-Display-P4  (TFT 540x1168 variant, ESP32-P4 + ESP32-C6 co-proc)
+#  ----------------------------------------------------------------------------
+#  Pin map source: github.com/Xinyuan-LilyGO/T-Display-P4 (debug2 branch)
+#                  components/private_library/t_display_p4_config.h
+#
+#  Bus map
+#    I2C_0  SDA=GPIO7   SCL=GPIO8    XL9535 (0x20), BQ27220 (0x55), PCF8563 (0x51)
+#                                HI8561 touch on AMOLED variant (0x68), GT9895 (0x5D)
+#    I2C_1  SDA=GPIO20  SCL=GPIO21   ES8311 (0x18), ICM20948 (0x68), AW86224 (0x58),
+#                                SGM38121 (0x28)
+#
+#  Display   : H0405S002T002-V0  540x1168  MIPI-DSI  HI8561 driver
+#              Backlight = GPIO51 (LEDC PWM)
+#              Reset     = XL9535 IO2
+#              Touch reset/int (if fitted) = XL9535 IO3 / IO4
+#
+#  C6 host   : SDIO  CLK=GPIO18 CMD=GPIO19 D0=GPIO14 D1=GPIO15 D2=GPIO16 D3=GPIO17
+#              WAKE = XL9535 IO13, EN = XL9535 IO14
+#
+#  Audio     : ES8311 codec on I2C_1
+#              BCLK=GPIO12 MCLK=GPIO13 WS=GPIO9  DIN=GPIO10 DOUT=GPIO11
+#              PA enable  = XL9535 IO6  (5.0V)  + IO0 (3.3V)
+#
+#  SD card   : SDIO_1  CLK=GPIO43 CMD=GPIO44 D0=GPIO39 D1=GPIO40 D2=GPIO41 D3=GPIO42
+#              Enable = XL9535 IO15
+#
+#  Ethernet  : on-board W5500 (SPI_1).
+#              CS=GPIO26, INT=GPIO27, RST=XL9535 IO5.  The SPI_1 bus is
+#              shared with the SX1262 LoRa modem; only one of the two can
+#              be active at a time.  Ethernet gets the bus by default.
+#
+#  Camera    : OV2710  MIPI-CSI.  ESPHome 2026.4 has no native MIPI-CSI driver
+#              (esp32_camera is parallel only). The camera block is therefore
+#              commented out — see TODO at the end of the file.
+# =============================================================================
+
+substitutions:
+  device_name: lilygo-t-display-p4
+  name: lilygo-t-display-p4
+  friendly_name: LilyGo T-Display P4
+  build_root: C:/
+
+  # ---- Voice-assistant illustrations (pulled from upstream casita set) ----
+  loading_illustration_file:   https://github.com/esphome/wake-word-voice-assistants/raw/main/casita/loading_320_240.png
+  idle_illustration_file:      https://github.com/esphome/wake-word-voice-assistants/raw/main/casita/idle_320_240.png
+  listening_illustration_file: https://github.com/esphome/wake-word-voice-assistants/raw/main/casita/listening_320_240.png
+  thinking_illustration_file:  https://github.com/esphome/wake-word-voice-assistants/raw/main/casita/thinking_320_240.png
+  replying_illustration_file:  https://github.com/esphome/wake-word-voice-assistants/raw/main/casita/replying_320_240.png
+  error_illustration_file:     https://github.com/esphome/wake-word-voice-assistants/raw/main/casita/error_320_240.png
+
+  loading_illustration_background_color:   "000000"
+  idle_illustration_background_color:      "000000"
+  listening_illustration_background_color: "FFFFFF"
+  thinking_illustration_background_color:  "FFFFFF"
+  replying_illustration_background_color:  "FFFFFF"
+  error_illustration_background_color:     "000000"
+
+  micro_wake_word_model: okay_nabu
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  min_version: 2026.1.0
+  build_path: ${build_root}/${device_name}
+  environment_variables:
+    PLATFORMIO_WORKSPACE_DIR: "${build_root}/${device_name}"
+    PLATFORMIO_CORE_DIR:     "${build_root}/${device_name}"
+  on_boot:
+    - priority: -1000
+      then:
+        - logger.log: "Backlight ON"
+        - light.turn_on:
+            id: backlight
+            brightness: 100%
+
+# ===========================================================================
+#  Platform / framework
+#  Variant-based config (matches Waveshare 10.1" baseline; only flash_size
+#  differs - T-Display-P4 has 16MB, Waveshare has 32MB).
+# ===========================================================================
+esp32:
+  variant: esp32p4
+  engineering_sample: true
+  cpu_frequency: 360MHz
+  flash_size: 16MB
+  partitions: partitions.csv
+  framework:
+    type: esp-idf
+    advanced:
+      enable_idf_experimental_features: true
+    sdkconfig_options:
+      # v1.22q: bump IDF freeRTOS task watchdog from 5s -> 30s.
+      # SDIO recovery on the P4 + C6 link can take 6-8s; default 5s
+      # trips TWDT and the panel reboots (rst:0xc SW_CPU_RESET).
+      CONFIG_ESP_TASK_WDT_TIMEOUT_S: "30"
+      # v1.22u: WiFi RMT (Radio Mgmt Task) buffer + AMPDU tuning for
+      # the ESP32-C6 wifi co-processor. Defaults limit throughput on
+      # the P4 + C6 link; matching vendor IDF examples for similar
+      # 7-10" panel workloads has been stable in Crowpanel testing.
+      CONFIG_WIFI_RMT_STATIC_RX_BUFFER_NUM: "16"
+      CONFIG_WIFI_RMT_DYNAMIC_RX_BUFFER_NUM: "64"
+      CONFIG_WIFI_RMT_DYNAMIC_TX_BUFFER_NUM: "64"
+      CONFIG_WIFI_RMT_AMPDU_TX_ENABLED: y
+      CONFIG_WIFI_RMT_TX_BA_WIN: "32"
+      CONFIG_WIFI_RMT_AMPDU_RX_ENABLED: y
+      CONFIG_WIFI_RMT_RX_BA_WIN: "32"
+      # v1.22u: LWIP TCP buffer tuning. Default 16KB send window is
+      # the bottleneck for the live state-poll bulk /api/states fetch
+      # (200KB+); default TCP receive mailbox (6) DoSes when HA
+      # pushes 200+ entity state_changed events in a burst.
+      CONFIG_LWIP_TCP_SND_BUF_DEFAULT: "65534"
+      CONFIG_LWIP_TCP_WND_DEFAULT: "65534"
+      CONFIG_LWIP_TCP_RECVMBOX_SIZE: "64"
+      CONFIG_LWIP_UDP_RECVMBOX_SIZE: "64"
+      CONFIG_LWIP_TCPIP_RECVMBOX_SIZE: "64"
+      CONFIG_LWIP_TCP_SACK_OUT: y
+      # v1.25c7+: enable FreeRTOS trace facility (used by stuck-task
+      # monitor's uxTaskGetSystemState pre-crash walk).
+      CONFIG_FREERTOS_USE_TRACE_FACILITY: y
+      CONFIG_ESP32_PANIC_HANDLER_IRAM: y
+      CONFIG_FREERTOS_INTERRUPT_BACKTRACE: y
+      CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK: y
+      # P4+C6 SDIO wedge fix: reserve internal-SRAM DMA pool so SDIO
+      # can satisfy sdio_push_data_to_queue's buffer alloc even when
+      # general heap is fragmented.
+      CONFIG_ESP_SYSTEM_MEM_FRAGMENTATION_HARDENING: y
+      # v1.28: route malloc() to PSRAM. DMA-capable allocations stay
+      # in internal SRAM (MALLOC_CAP_INTERNAL via heap_caps_malloc,
+      # which this option doesn't change). Cuts internal-RAM OOMs.
+      CONFIG_SPIRAM_USE_MALLOC: y
+
+# PSRAM — required by mipi_dsi.  ESPHome's psram validator limits
+# ESP32-P4 to hex mode (octal is S3-only), and 200MHz is the supported
+# top speed for the P4's hex PSRAM interface.
+psram:
+  mode: hex
+  speed: 200MHz
+
+# ESP LDO channels 3 + 4 -> panel + codec power rails.  2.5V matches
+# the Waveshare baseline; verify against your board's schematic if
+# the display comes up dim / blank.
+esp_ldo:
+  - channel: 3
+    voltage: 2.5V
+  - channel: 4
+    voltage: 2.5V
+
+# ===========================================================================
+#  Logging / API / OTA
+# ===========================================================================
+logger:
+  level: INFO
+  baud_rate: 115200
+  # T-Display-P4 USB-UART bridge auto-resets on RTS/DTR transitions.
+  # The default (`deassert_rts_dtr: false`) keeps the lines low during
+  # monitor mode so the chip doesn't get held in reset / kicked back
+  # into the ROM bootloader every time the monitor opens the port.
+  # Do NOT set this to `true` -- that's what causes the
+  # "stops at the ROM bootloader" symptom (app never gets past boot0
+  # because the monitor re-asserts the lines).
+  deassert_rts_dtr: true
+
+api:
+  encryption:
+    key: !secret encryption_key
+  reboot_timeout: 15min
+  # Required for ha_autopanel to call HA services (light.turn_on/off,
+  # switch.toggle) and subscribe to state_changed events. Without these
+  # the C++ component won't link.
+  homeassistant_services: true
+  homeassistant_states: true
+  on_client_connected:
+    - logger.log: "HA Connected!"
+
+ota:
+  - platform: esphome
+    id: ota_esphome
+    password: !secret ota_password
+
+# Built-in web server provides the underlying HTTP transport.
+# ha_autopanel registers its /autopanel setup form and /autopanel/save
+# POST handler against this base.  The panel UI is not served here;
+# it's drawn on the LVGL display.
+web_server:
+  port: 80
+
+# http_request is required by ha_autopanel (referenced by
+# http_request_ref: ha_http below).  It powers the C++ component's
+# GET /api/states, POST /api/services, etc. traffic to HA.
+http_request:
+  id: ha_http
+
+# ===========================================================================
+#  External components
+#    esphome_dynamic_entity_discovery lives at:
+#      C:\ESPHome_Projects\esphome_dynamic_entity_discovery\components\
+#    with the component itself under  components/ha_autopanel/.
+#    We expose the C++ component as `ha_autopanel:` below.
+# ===========================================================================
+external_components:
+  - source:
+      type: local
+      path: C:/ESPHome_Projects/esphome_dynamic_entity_discovery/components
+    components: [ha_autopanel]
+
+# ===========================================================================
+#  I2C buses
+# ===========================================================================
+i2c:
+  - id: bus_internal     # I2C_0  GPIO7/8  (XL9535, BQ27220, RTC, touch)
+    sda: GPIO7
+    scl: GPIO8
+    frequency: 400kHz
+    scan: true
+
+  - id: bus_audio_periph # I2C_1  GPIO20/21 (ES8311, ICM20948, AW86224, SGM38121)
+    sda: GPIO20
+    scl: GPIO21
+    frequency: 400kHz
+    scan: true
+
+# ===========================================================================
+#  XL9535 — I/O expander (16 usable pins; pins 8 and 9 are N.C.)
+#  Interrupt line is GPIO5.
+#  Default-address expander on bus_internal.
+# ===========================================================================
+xl9535:
+  - id: io_expander
+    i2c_id: bus_internal
+    address: 0x20
+
+# Pin aliases via the expander ---------------------------------------------
+# XL9535 only registers a pin schema (other components reference
+# `pin: { xl9535: io_expander, number: N }`); it does NOT register a
+# switch / binary_sensor platform.  So we wrap each expander pin in
+# an `output: - platform: gpio` (or `binary_sensor: - platform: gpio`)
+# and expose the outputs as `switch: - platform: output` for HA.
+
+output:
+  # --- existing LEDC PWM (backlight) ---
+  - platform: ledc
+    id: backlight_pwm
+    pin: GPIO51
+    frequency: 5000Hz
+
+  # --- XL9535 outputs ---
+  # NOTE: XL9535 IO2 is owned by display.mipi_dsi's reset_pin below
+  # (the display driver toggles it on init), so we don't re-export it
+  # here as a separate output.
+  - platform: gpio
+    id: touch_reset_out
+    pin:
+      xl9535: io_expander
+      number: 3
+      mode:
+        output: true
+  - platform: gpio
+    id: pa_5v_en_out
+    pin:
+      xl9535: io_expander
+      number: 6
+      mode:
+        output: true
+  - platform: gpio
+    id: pa_3v3_en_out
+    pin:
+      xl9535: io_expander
+      number: 0
+      mode:
+        output: true
+  - platform: gpio
+    id: sd_en_out
+    pin:
+      xl9535: io_expander
+      number: 15
+      mode:
+        output: true
+  - platform: gpio
+    id: ethernet_rst_out
+    pin:
+      xl9535: io_expander
+      number: 5
+      mode:
+        output: true
+  - platform: gpio
+    id: c6_wake_out
+    pin:
+      xl9535: io_expander
+      number: 13
+      mode:
+        output: true
+  - platform: gpio
+    id: c6_en_out
+    pin:
+      xl9535: io_expander
+      number: 14
+      mode:
+        output: true
+  - platform: gpio
+    id: antenna_switch_out
+    pin:
+      xl9535: io_expander
+      number: 1
+      mode:
+        output: true
+
+# HA-facing switches wrap the outputs above
+switch:
+  - platform: output
+    id: touch_reset
+    name: "Touch Reset"
+    output: touch_reset_out
+    internal: true
+    restore_mode: ALWAYS_OFF
+  - platform: output
+    id: pa_5v_en
+    name: "PA 5V Enable"
+    output: pa_5v_en_out
+    internal: true
+    restore_mode: ALWAYS_OFF
+  - platform: output
+    id: pa_3v3_en
+    name: "Codec 3.3V Enable"
+    output: pa_3v3_en_out
+    internal: true
+    restore_mode: ALWAYS_OFF
+  - platform: output
+    id: sd_en
+    name: "SD Power"
+    output: sd_en_out
+    internal: true
+    restore_mode: ALWAYS_OFF
+  - platform: output
+    id: ethernet_rst
+    name: "Ethernet Reset"
+    output: ethernet_rst_out
+    internal: true
+    restore_mode: ALWAYS_OFF
+  - platform: output
+    id: c6_wake
+    name: "C6 Wake"
+    output: c6_wake_out
+    internal: true
+    restore_mode: ALWAYS_ON
+  - platform: output
+    id: c6_en
+    name: "C6 EN"
+    output: c6_en_out
+    internal: true
+    restore_mode: ALWAYS_ON
+  - platform: output
+    id: antenna_switch
+    name: "Antenna Switch"
+    output: antenna_switch_out
+    internal: true
+
+binary_sensor:
+  # Touch INT input (active-low)
+  - platform: gpio
+    id: touch_int
+    pin:
+      xl9535: io_expander
+      number: 4
+      mode:
+        input: true
+    name: "Touch IRQ"
+    internal: true
+
+  # RTC INT
+  - platform: gpio
+    id: rtc_int
+    pin:
+      xl9535: io_expander
+      number: 12
+      mode:
+        input: true
+    name: "RTC IRQ"
+    internal: true
+
+# ===========================================================================
+#  MIPI-DSI display  (HI8561 driver, 540 x 1168, 2 lanes)
+#  Reset pin is the XL9535 IO2 output defined above.
+#
+#  Note: SPI_1 (CLK=GPIO2 MOSI=GPIO3 MISO=GPIO4) is occupied by the
+#  on-board W5500 Ethernet controller (CS=GPIO26).  If you ever need
+#  to drive the SX1262 LoRa modem, add it on the same SPI bus with a
+#  different CS pin — only one of Ethernet / LoRa can be active at
+#  a time.
+#
+#  The T-Display-P4 uses the Himax HI8561 driver IC.  ESPHome 2026.4
+#  does NOT have a built-in HI8561 model, so we use `model: CUSTOM`
+#  and inline the panel's timing + a minimal init sequence.  The init
+#  sequence below is the safe minimum (exit sleep + display on + 16bpp
+#  pixel format); the full sequence from the HI8561 datasheet with
+#  gamma + power settings should be substituted for production.  See
+#  LilyGO debug2 branch examples/debug/lvgl_lcd for reference.
+# ===========================================================================
+display:
+  - platform: mipi_dsi
+    id: main_display
+    model: CUSTOM
+    reset_pin:
+      xl9535: io_expander
+      number: 2
+    enable_pin:
+      xl9535: io_expander
+      number: 7       # External sensor / panel enable (per header)
+    dimensions:
+      width: 540
+      height: 1168
+    hsync_pulse_width: 28
+    hsync_back_porch:  26
+    hsync_front_porch: 20
+    vsync_pulse_width: 2
+    vsync_back_porch:  22
+    vsync_front_porch: 200
+    pclk_frequency: "60MHz"
+    lane_bit_rate: "1Gbps"
+    lanes: 2
+    color_order: RGB
+    invert_colors: true
+    color_depth: 16
+    update_interval: never
+    auto_clear_enabled: false
+    # TODO: replace this with the full HI8561 init sequence from the
+    # panel datasheet.  The three commands below just bring the panel
+    # out of sleep + set 16bpp pixel format; gamma + power + porch
+    # tuning still need to be added.
+    init_sequence:
+      - [0x11, 0x00]            # SLPOUT - exit sleep
+      - [0x29, 0x00]            # DISPON - display on
+      - [0x3A, 0x55]            # COLMOD - 16bpp RGB565
+      - [0x51, 0xFF]            # WRDISBV - backlight brightness (full)
+
+# Backlight — already declared as `output: - platform: ledc` in the
+# expander pin block above.  Here we just wrap it as a dimmable light.
+light:
+  - platform: monochromatic
+    id: backlight
+    name: "Backlight"
+    output: backlight_pwm
+    restore_mode: ALWAYS_ON
+    default_transition_length: 200ms
+
+# ===========================================================================
+#  Fonts — referenced by ha_autopanel C++ (font_xl, font_lg, font_md,
+#  font_sm, font_button).  gfonts://Roboto is the same family the
+#  Waveshare 10.1" config uses; sized for a 540x1168 panel.
+# ===========================================================================
+font:
+  - file: "gfonts://Roboto"
+    id: font_xl
+    size: 28
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_lg
+    size: 24
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_md
+    size: 20
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_sm
+    size: 16
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_button
+    size: 14
+    bpp: 4
+
+# ===========================================================================
+#  LVGL — full-screen UI for media-player + voice-assistant status.
+#  The T-Display-P4 panel is natively portrait 540x1168, so rotation: 0
+#  (no software rotation needed; LVGL canvas matches the panel).
+# ===========================================================================
+lvgl:
+  id: lvgl_display
+  displays:
+    - main_display
+  rotation: 0
+  buffer_size: 25%
+  full_refresh: false
+  log_level: INFO
+  bg_color: 0x111827
+  text_font: font_xl    # default; ha_autopanel swaps as needed
+  # Widgets used by ha_autopanel's default title bar / card styles.
+  widgets:
+    - arc:
+        hidden: true
+    - label:
+        hidden: true
+
+# ===========================================================================
+#  Connectivity
+#    WiFi   : ESP-Hosted SDIO to the on-board ESP32-C6
+#    Ethernet: external W5500 on SPI2 (header pins GPIO26/27/33/32/25/36)
+# ===========================================================================
+esp32_hosted:
+  variant: ESP32C6
+  active_high: true
+  slot: 0
+  bus_width: 4
+  clk_pin:  GPIO18
+  cmd_pin:  GPIO19
+  d0_pin:   GPIO14
+  d1_pin:   GPIO15
+  d2_pin:   GPIO16
+  d3_pin:   GPIO17
+  sdio_frequency: 40MHz
+  # C6 EN is on XL9535 IO14 (`c6_en` switch above), but esp32_hosted
+  # only accepts raw GPIO numbers for `reset_pin`, not the xl9535 pin
+  # schema.  We point reset_pin at GPIO53 (a free header pin) as a
+  # no-op - the C6 EN line is driven by the `c6_en` switch (default
+  # ALWAYS_ON) independently.  Hard-reset the C6 by toggling that
+  # switch off then back on from HA.
+  reset_pin: GPIO53
+
+wifi:
+  ssid:     !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: light
+  fast_connect: true
+  ap:
+    ssid: "${friendly_name} Setup"
+    password: !secret my_ap_password
+  on_connect:
+    then:
+      - delay: 1s
+      - logger.log: "WiFi connected, triggering dynamic discovery..."
+      - lambda: 'id(dynamic_discovery).trigger_discovery();'
+
+captive_portal:
+
+# ===========================================================================
+#  Ethernet (W5500) — DISABLED by default.
+#
+#  ESPHome does not allow `ethernet:` and `wifi:` in the same config
+#  (they're mutually exclusive at the framework level).  The C6 SDIO
+#  WiFi co-processor is the primary network interface; the W5500
+#  Ethernet on SPI_1 is a wired fallback.  To use Ethernet instead:
+#    1. Comment out the `wifi:` block above
+#    2. Uncomment the `ethernet:` block below
+#    3. Wire an actual RJ45 jack to the W5500 module's SPI pins
+#
+#  Note: SPI_1 (GPIO2/3/4) is shared with the SX1262 LoRa modem — only
+#  one of Ethernet / LoRa can be active at a time.
+#
+#  ethernet:
+#    type: W5500
+#    clk_pin:  GPIO2
+#    mosi_pin: GPIO3
+#    miso_pin: GPIO4
+#    cs_pin:   GPIO26
+#    interrupt_pin: GPIO27
+#    reset_pin: GPIO53           # see note above; XL9535 IO5 (`ethernet_rst`)
+#                                # drives the actual PHY reset on this board.
+#    clock_speed: 20MHz
+#    manual_ip:                 # remove this block to fall back to DHCP
+#      static_ip: 192.168.1.201
+#      gateway:   192.168.1.1
+#      subnet:    255.255.255.0
+# ===========================================================================
+
+# ===========================================================================
+#  ES8311 audio codec (I2C address 0x18, on I2C_1)
+#  Loaded as a platform under `audio_dac:`, not as a top-level key.
+# ===========================================================================
+audio_dac:
+  - platform: es8311
+    id: es8311_codec
+    i2c_id: bus_audio_periph
+    address: 0x18
+    bits_per_sample: "16bit"
+    mic_gain: 24DB
+    sample_rate: 48000
+    use_mclk: true
+    use_microphone: true
+
+# ===========================================================================
+#  I2S bus — single bus shared between ES8311 ADC (mic) and ES8311 DAC
+#  (speaker).  ESPHome can't run two separate i2s_audio buses on the
+#  same pins; codec is half-duplex in practice (mic or speaker, not
+#  both at once).
+#    BCLK=GPIO12, MCLK=GPIO13, WS=GPIO9, DIN=GPIO11 (ADC), DOUT=GPIO10 (DAC)
+# ===========================================================================
+i2s_audio:
+  - id: audio_bus
+    i2s_lrclk_pin: GPIO9
+    i2s_bclk_pin:  GPIO12
+    i2s_mclk_pin:  GPIO13
+
+# ===========================================================================
+#  Microphone (input — uses ES8311 ADC through the shared I2S bus)
+# ===========================================================================
+microphone:
+  - platform: i2s_audio
+    id: onboard_mic
+    i2s_audio_id: audio_bus
+    i2s_din_pin:  GPIO11    # ADC_DATA from ES8311
+    adc_type: external
+    channel: right         # ES8311 ADC outputs on the right channel
+    sample_rate: 16000
+    bits_per_sample: 32bit
+
+# ===========================================================================
+#  Speakers — pipeline: mixer(resampler + resampler) -> ES8311 DAC -> NS4150B
+# ===========================================================================
+speaker:
+  # Physical DAC
+  - platform: i2s_audio
+    id: onboard_speaker
+    i2s_audio_id: audio_bus
+    i2s_dout_pin: GPIO10    # DAC_DATA to ES8311
+    dac_type: external
+    channel: right          # ES8311 DAC takes the right channel
+    sample_rate: 48000
+    bits_per_sample: 16bit
+    buffer_duration: 100ms
+    i2s_comm_fmt: stand_i2s
+
+  # Mixer — combines voice announcements and media playback
+  - platform: mixer
+    id: audio_mixer
+    output_speaker: onboard_speaker
+    source_speakers:
+      - id: announcement_mixing_input
+        timeout: never
+      - id: media_mixing_input
+        timeout: never
+
+  # Resamplers — both legs run at 48 kHz / 16-bit
+  - platform: resampler
+    id: announcement_resampling_speaker
+    output_speaker: announcement_mixing_input
+    sample_rate: 48000
+    bits_per_sample: 16
+
+  - platform: resampler
+    id: media_resampling_speaker
+    output_speaker: media_mixing_input
+    sample_rate: 48000
+    bits_per_sample: 16
+
+# ===========================================================================
+#  Media player
+# ===========================================================================
+media_player:
+  - platform: speaker
+    name: "${friendly_name} Media Player"
+    id: speaker_media_player
+    volume_min: 50%
+    volume_max: 100%
+    volume_increment: 5%
+
+    announcement_pipeline:
+      speaker: announcement_resampling_speaker
+      format: FLAC
+      sample_rate: 48000
+      num_channels: 1
+
+    media_pipeline:
+      speaker: media_resampling_speaker
+      format: FLAC
+      sample_rate: 48000
+      num_channels: 1
+
+    on_announcement:
+      - if:
+          condition:
+            microphone.is_capturing:
+          then:
+            - micro_wake_word.stop
+            - voice_assistant.stop
+      - mixer_speaker.apply_ducking:
+          id: media_mixing_input
+          decibel_reduction: 20
+          duration: 0s
+
+    on_play:
+      - micro_wake_word.stop
+      - voice_assistant.stop
+
+    on_idle:
+      - delay: 100ms
+      - if:
+          condition:
+            not: voice_assistant.is_running
+          then:
+            - micro_wake_word.start
+
+# ===========================================================================
+#  Wake word + voice assistant
+# ===========================================================================
+micro_wake_word:
+  id: my_wake_word
+  models:
+    - model: ${micro_wake_word_model}
+  on_wake_word_detected:
+    - micro_wake_word.stop
+    - voice_assistant.start:
+        wake_word: !lambda return wake_word;
+
+voice_assistant:
+  microphone: onboard_mic
+  media_player: speaker_media_player
+  micro_wake_word: my_wake_word
+  noise_suppression_level: 0
+  auto_gain: 15dBFS
+  volume_multiplier: 2.0
+  conversation_timeout: 300s
+  on_error:
+    - micro_wake_word.start
+  on_end:
+    - delay: 200ms
+    - micro_wake_word.start
+
+# ===========================================================================
+#  I2C devices that have no first-party ESPHome platform yet.
+#
+#  These chips ARE on the bus and WILL be reported by the I2C scanner
+#  (scan: true above).  ESPHome 2026.4 has no native platform for them,
+#  so to actually read them you'll need to write a small custom hub
+#  component (or port the relevant Arduino library through
+#  external_components):
+#
+#    BQ27220 — battery fuel gauge   0x55 on bus_internal (I2C_0)
+#    ICM20948 — 9-axis IMU          0x68 on bus_audio_periph (I2C_1)
+#    AW86224  — haptic driver       0x58 on bus_audio_periph (I2C_1)
+#    SGM38121 — PMIC                0x28 on bus_audio_periph (I2C_1)
+#
+#  PCF8563 (RTC, 0x51 on I2C_0) is claimed by the `time:` platform below.
+# ===========================================================================
+
+# ===========================================================================
+#  Time
+#    SNTP is the network sync source (referenced by ha_autopanel's
+#    `time_ref: sntp_time`).  The on-board PCF8563 RTC keeps time
+#    across power cycles; HA-time sync writes back to it.
+# ===========================================================================
+time:
+  - platform: sntp
+    id: sntp_time
+    servers:
+      - 0.pool.ntp.org
+      - time.google.com
+      - time.cloudflare.com
+    timezone: "America/New_York"
+    on_time_sync:
+      then:
+        - logger.log: "NTP time synced"
+        - pcf8563.write_time:
+            id: pcf8563_time
+
+  - platform: pcf8563
+    id: pcf8563_time
+    i2c_id: bus_internal
+    address: 0x51
+    update_interval: never
+
+# ===========================================================================
+#  Buttons / diagnostics
+# ===========================================================================
+button:
+  - platform: restart
+    id: btn_restart
+    name: "Restart"
+  - platform: factory_reset
+    id: btn_factory_reset
+    name: "Factory Reset"
+
+# ===========================================================================
+#  Custom component — dynamic entity discovery (`ha_autopanel`)
+#
+#  The component lives at:
+#    C:\ESPHome_Projects\esphome_dynamic_entity_discovery\components\
+#  with the actual sources under  components/ha_autopanel/.
+#
+#  Wiring requirements (all satisfied above):
+#    - http_request: id=ha_http           (referenced by http_request_ref)
+#    - api: homeassistant_services: true  (lets the C++ call HA services)
+#    - api: homeassistant_states:   true  (lets the C++ subscribe to state_changed)
+#    - time: id=sntp_time                 (referenced by time_ref)
+#    - wifi.on_connect:                   (triggers id(dynamic_discovery).trigger_discovery())
+#    - display + lvgl:                    (the C++ draws widgets onto the LVGL canvas)
+#    - fonts: font_xl/lg/md/sm/button    (referenced by ha_autopanel C++)
+# ===========================================================================
+ha_autopanel:
+  id: dynamic_discovery
+  setup_priority: -2000   # after WiFi (600) and http_request, before mipi_dsi/LVGL (900+)
+  ha_api_url: "http://homeassistant.local:8123"
+  ha_api_password: !secret my_ha_api_password
+  http_request_ref: ha_http
+  time_ref: sntp_time
+  # The T-Display-P4 panel is 540x1168 portrait.  LVGL rotation is 0
+  # (the panel is naturally portrait; no software rotation needed).
+  card_width: 256
+  card_gap: 8
+  screen_width: 540
+  screen_height: 1168
+  start_x: 0
+  start_y: 40
+  default_on_pct: 30
+  agent_debug: true           # /autopanel/test/* HTTP endpoints (test harness)
+  weather_entity_id: "weather.forecast_home"
+  # enable_stuck_task_recovery: defaults to false.  Flip to true to
+  # enable the graduated recovery sequence
+  # (log -> drop httpd worker priority -> C6 reset via GPIO54 on
+  # the 10.1" board, via the corresponding XL9535 pin on the T-Display-P4
+  # -> App.reboot after 3 recoveries in a window).
+  # enable_stuck_task_recovery: true
+
+# ===========================================================================
+#  TODO — OV2710 camera
+#  ESPHome 2026.4's `esp32_camera:` component drives the parallel DVP bus
+#  (OV2640 / OV7725). The T-Display-P4's OV2710 uses MIPI-CSI instead, which
+#  ESPHome does not yet expose. Options:
+#
+#    1. Run the ESP-IDF camera driver inside an `external_components` entry
+#       and pipe frames into `esp32_camera_web_server` via a custom API.
+#    2. Move the camera handling to the C6 co-processor and forward frames
+#       over the SDIO link.
+#
+#  Leave the camera section below commented until one of those is built:
+#
+#  esp32_camera:
+#    name: "${friendly_name} Camera"
+#    data_pins: [...]    # not applicable to MIPI-CSI
+#    ...
+# ===========================================================================

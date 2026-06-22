@@ -1,0 +1,14 @@
+# LilyGo T-Display-P4 partition table (16MB flash)
+# Same shape as the Waveshare 10.1" layout, scaled to fit 16MB.
+# factory at 0x10000 to work around esphome serial upload hardcode
+# (esphome/__main__.py:876 hardcodes 0x10000 for ESP32). nvs shrunk
+# to 16KB so otadata fits before factory. factory / ota slots are
+# 3MB each; storage takes the rest.
+# End: 0x1000000 (16MB).
+nvs,        data, nvs,      0x9000,    0x4000,
+otadata,    data, ota,      0xd000,    0x2000,
+phy_init,   data, phy,      0xf000,    0x1000,
+factory,    app,  factory,  0x10000,   0x300000,
+ota_0,      app,  ota_0,    0x310000,  0x300000,
+ota_1,      app,  ota_1,    0x610000,  0x300000,
+storage,    data, littlefs, 0x910000,  0x6F0000,
