@@ -1,0 +1,345 @@
+# =============================================================================
+#  JC3248W535C  (ESP32-S3, 3.5" 320x480 IPS, AXS15231 touch)
+#  ----------------------------------------------------------------------------
+#  Structural template: Crowpanel_7.00_ESP32-P4\test_dynamic_component.yaml
+#    - substitutions / on_boot / ha_autopanel / LVGL / font / http_request
+#      patterns are adapted from that file.
+#    - All P4-specific bits dropped (esp32_hosted, esp_ldo, partitions.csv,
+#      hex PSRAM, the P4 SDK-config hardening). Replaced with S3 defaults.
+#
+#  Hardware reference: github.com/DaradiciLevente/JC3248W535C-EspHome-NTP-Clock
+#    ceas.yaml upstream:
+#      esp32:      esp32-s3-devkitc-1, 16MB flash, octal PSRAM @ 80MHz
+#      spi:        quad  CLK=47  data_pins=[21, 48, 40, 39]
+#      i2c:        SDA=4  SCL=8
+#      display:    mipi_spi  model JC3248W535  40MHz  rotation 90
+#      touchscreen: axs15231  (handles its own INT/RST internally)
+#      backlight:  GPIO1  (LEDC PWM)
+#      fonts:      fonts/digital-7.ttf (160/100), DancingScript (50)
+#
+#  Two display stacks are configured (one active, one commented out):
+#    - DEFAULT: LVGL + ha_autopanel (Crowpanel pattern, room grid + clock)
+#    - ALT:     raw display.lambda + axs15231 touch (GitHub ceas.yaml pattern,
+#               tap-to-cycle background color). Enable by removing the
+#               `display:` + `touchscreen:` + `lvgl:` blocks and uncommenting
+#               the `display_raw:` and `touchscreen_raw:` blocks at the end.
+# =============================================================================
+
+substitutions:
+  device_name: jc3248w535c
+  build_root: C:/
+  pio_core_dir: pio_core_dir   # shared PIO cache (not per-device)
+
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${device_name}
+  # build_path at C:/<device_name> keeps the linker command line short
+  # (avoids the 32k CreateProcess limit on Windows idf.py link).
+  build_path: ${build_root}/${device_name}
+  environment_variables:
+    PLATFORMIO_WORKSPACE_DIR: "${build_root}/${device_name}"
+    PLATFORMIO_CORE_DIR:      "${build_root}/${pio_core_dir}"
+  on_boot:
+    priority: -1000
+    then:
+      - logger.log: "${device_name} booting..."
+      - output.turn_on: backlight_pwm
+      - delay: 200ms
+      - light.turn_on:
+          id: back_light
+          brightness: 100%
+
+# ===========================================================================
+#  Platform / framework  (ESP32-S3, IDF)
+# ===========================================================================
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: y
+      CONFIG_ESP32S3_DATA_CACHE_64KB: y
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: y
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: y
+      CONFIG_SPIRAM_RODATA: y
+      CONFIG_COMPILER_OPTIMIZATION_SIZE: y
+      CONFIG_FREERTOS_USE_TRACE_FACILITY: y
+      # Route std::string / std::vector / new allocations to
+      # PSRAM. The S3 has 2MB+ octal PSRAM, more than enough
+      # for the aggregate template POST body (~50-200KB
+      # depending on area count). Without this, the template
+      # string lands in the 384KB internal heap and OOMs the
+      # moment ha_autopanel tries to build the /api/template
+      # POST body for 15 areas (Garage alone is 166 entities
+      # -> huge Jinja filter). DMA-capable allocs
+      # (MALLOC_CAP_INTERNAL) still go to internal SRAM.
+      CONFIG_SPIRAM_USE_MALLOC: y
+    advanced:
+      enable_idf_experimental_features: true
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+# ===========================================================================
+#  Logging / API / OTA / Web (ha_autopanel /test/* endpoints ride on web_server)
+# ===========================================================================
+logger:
+  level: INFO
+  baud_rate: 115200
+
+api:
+  encryption:
+    key: !secret encryption_key
+  # Required for ha_autopanel to call HA services (light.turn_on/off,
+  # switch.toggle) and subscribe to state_changed events. Without
+  # these the C++ component won't link.
+  homeassistant_services: true
+  homeassistant_states: true
+  on_client_connected:
+    - logger.log: "HA Connected!"
+
+web_server:
+  port: 80
+
+ota:
+  - platform: esphome
+  - platform: http_request
+    # placeholder; ha_autopanel auto-installs a /update endpoint
+
+# ===========================================================================
+#  Time  (SNTP; drives the title-bar clock + the on-screen clock widget)
+# ===========================================================================
+time:
+  - platform: sntp
+    id: sntp_time
+    servers:
+      - 0.pool.ntp.org
+      - time.google.com
+      - time.cloudflare.com
+    timezone: "America/New_York"
+    on_time_sync:
+      then:
+        - logger.log: "NTP time synced"
+
+# ===========================================================================
+#  WiFi + fallback AP
+# ===========================================================================
+wifi:
+  ssid:     !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${device_name} Fallback"
+    password: !secret my_ap_password
+  on_connect:
+    then:
+      - delay: 1s
+      - logger.log: "WiFi connected, triggering dynamic discovery..."
+      - lambda: 'id(dynamic_discovery).trigger_discovery();'
+
+# ===========================================================================
+#  Buses
+# ===========================================================================
+spi:
+  - type: quad
+    clk_pin: GPIO47
+    data_pins: [GPIO21, GPIO48, GPIO40, GPIO39]
+
+i2c:
+  - id: bus_a
+    sda: GPIO4
+    scl: GPIO8
+    frequency: 400kHz
+    scan: true
+
+# ===========================================================================
+#  HTTP request client (ha_autopanel uses this for HA REST calls)
+# ===========================================================================
+http_request:
+  id: ha_http
+
+# ===========================================================================
+#  Backlight
+# ===========================================================================
+output:
+  - platform: ledc
+    pin: GPIO1
+    id: backlight_pwm
+    frequency: 5000Hz
+
+light:
+  - platform: monochromatic
+    name: "Backlight"
+    output: backlight_pwm
+    id: back_light
+    restore_mode: ALWAYS_ON
+    internal: true
+
+# ===========================================================================
+#  Globals
+#    bg_color_index: tap-to-cycle background palette index (0..7).
+#    Mirrors the upstream ceas.yaml behaviour.  restore_value: no
+#    so it resets on every boot.
+# ===========================================================================
+globals:
+  - id: bg_color_index
+    type: int
+    restore_value: no
+    initial_value: '0'
+
+# ===========================================================================
+#  Fonts
+#    Mirrors the Crowpanel test_dynamic_component.yaml font set exactly
+#    (five gfonts Roboto sizes for ha_autopanel's title bar / cards /
+#    button text).  The local digital-7 / DancingScript fonts from the
+#    upstream ceas.yaml are NOT included here - the user can add them
+#    back if they want the GitHub clock rendering.
+# ===========================================================================
+font:
+  - file: "gfonts://Roboto"
+    id: font_xl
+    size: 28
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_lg
+    size: 24
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_md
+    size: 20
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_sm
+    size: 16
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_button
+    size: 14
+    bpp: 4
+
+# ===========================================================================
+#  Display + Touch (active stack: mipi_spi + axs15231, drives LVGL)
+#  - 320x480 portrait, rotation 90 -> 480x320 landscape for ha_autopanel
+#  - model JC3248W535 has its own reset/DC/CS handling in the platform
+#  - axs15231 touchscreen has no external INT/RST on this board
+# ===========================================================================
+display:
+  - id: my_display
+    platform: mipi_spi
+    model: JC3248W535
+    data_rate: 40MHz
+    # CS pin matches the model's default; explicit for documentation.
+    # GPIO45 is a strapping pin on ESP32-S3 (VDD_SPI voltage select),
+    # which is why the model's default carries
+    # ignore_strapping_warning: True.
+    cs_pin: GPIO45
+    # byte_order is the display's expectation. Model default is
+    # "big_endian" (the AXS15231B reads MSB first over quad SPI).
+    # The lvgl block below MUST match this or draw_pixels_at()
+    # will log "Unsupported color depth or bit order" at every
+    # LVGL flush.
+    byte_order: big_endian
+    # rotation handled by the lvgl block below (display.rotation is
+    # rejected when LVGL owns the display)
+    update_interval: never
+    auto_clear_enabled: false
+
+touchscreen:
+  - id: my_touchscreen
+    platform: axs15231
+    i2c_id: bus_a
+    # axs15231 handles its own INT / RST internally on this board.
+    # No reset_pin / interrupt_pin / transform lines are needed.
+    update_interval: 50ms
+    on_release:
+      then:
+        - lambda: |-
+            id(bg_color_index)++;
+            if (id(bg_color_index) > 7) id(bg_color_index) = 0;
+
+# ===========================================================================
+#  LVGL
+#  Used by ha_autopanel (room grid + title bar clock).  ha_autopanel's
+#  __init__.py adds LV_USE_FLEX=1 via lvgl.defines so the room cards
+#  flow correctly.  Widgets below are required by ha_autopanel
+#  (it calls lv_arc_create / lv_label_create at runtime).
+# ===========================================================================
+lvgl:
+  displays:
+    - my_display
+  touchscreens:
+    - my_touchscreen
+  buffer_size: 100%
+  full_refresh: true
+  # MUST match display.byte_order above. The mipi_spi model's
+  # default is big_endian (AXS15231B reads MSB first over
+  # quad SPI). Setting this to little_endian causes
+  # "Unsupported color depth or bit order" to fire at every
+  # LVGL flush because draw_pixels_at() checks that the
+  # LVGL byte order matches the compiled-in IS_BIG_ENDIAN.
+  byte_order: big_endian
+  # color_depth intentionally omitted: mipi_spi model JC3248W535
+  # configures the panel's native color depth (16-bit RGB565
+  # by default) and rejects the lvgl color_depth override with
+  # "Unsupported color depth or bit order" at display init.
+  log_level: INFO
+  bg_color: 0x111827
+  text_font: font_xl
+  # The physical panel is 320x480 portrait; rotation 90 puts the
+  # LVGL canvas at 480x320 landscape, which matches ha_autopanel's
+  # screen_width/height below.  Per LVGL's rotate_coordinates(),
+  # touch is automatically remapped to the rotated canvas.
+  rotation: 90
+  widgets:
+    - arc: {}
+    - label: {}
+
+# ===========================================================================
+#  External components
+#    esphome_dynamic_entity_discovery lives at:
+#      C:\ESPHome_Projects\esphome_dynamic_entity_discovery\components\
+#    with the actual sources under  components/ha_autopanel/.
+#    We expose the C++ component as `ha_autopanel:` below.
+# ===========================================================================
+external_components:
+  - source:
+      type: local
+      path: C:/ESPHome_Projects/esphome_dynamic_entity_discovery/components
+    components: [ha_autopanel]
+
+# ===========================================================================
+#  ha_autopanel  (Crowpanel's room-grid discovery engine)
+#    Wiring requirements (all satisfied above):
+#      - http_request: id=ha_http            (http_request_ref)
+#      - api: homeassistant_services: true   (lets C++ call HA services)
+#      - api: homeassistant_states:   true   (lets C++ subscribe to state_changed)
+#      - time: id=sntp_time                  (time_ref -> title bar clock)
+#      - wifi.on_connect:                    (id(dynamic_discovery).trigger_discovery())
+#      - display + lvgl:                     (the C++ draws widgets onto the canvas)
+#      - fonts: font_xl/lg/md/sm/button     (ha_autopanel C++ swaps between them)
+#    screen_width/height must match the ROTATED canvas (480x320 here).
+# ===========================================================================
+ha_autopanel:
+  id: dynamic_discovery
+  ha_api_url: "http://homeassistant.local:8123"
+  ha_api_password: !secret my_ha_api_password
+  http_request_ref: ha_http
+  time_ref: sntp_time
+  card_width: 100
+  card_gap: 8
+  screen_width: 480
+  screen_height: 320
+  start_x: 0
+  start_y: 40
+  default_on_pct: 30
+  agent_debug: true
+  weather_entity_id: "weather.forecast_home"
+  # enable_stuck_task_recovery: defaults to false; flip to true to enable
+  # the graduated recovery sequence (the S3 has no C6 to reset, so the
+  # recovery path is log -> drop httpd worker priority -> App.reboot
+  # after 3 recoveries in a window).
+
+captive_portal:

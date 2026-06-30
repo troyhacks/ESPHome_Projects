@@ -1,15 +1,24 @@
-# ESPHome Crowpanel 7" ESP32-P4
-# Based on official Elecrow example
+# Test config for ha_autopanel component with LVGL
+# This validates LVGL widget creation
 
 substitutions:
-  friendly_name: 7inch-P4
-  esphome_version: "2026.4.5"
+  device_name: crowpanel-7-p4 # Needs to be lowecase
+  build_root: C:/
+  pio_core_dir: pio_core_dir   # shared PIO cache (not per-device)
+
 
 esphome:
-  name: elecrow7-inch-p4
-  friendly_name: ${friendly_name}
+  name: ${device_name}
+  friendly_name: ${device_name}
+  # build_path at C:/<device_name> keeps the linker command line short
+  # (avoids the 32k CreateProcess limit on Windows idf.py link).
+  build_path: ${build_root}/${device_name}
+  environment_variables:
+    PLATFORMIO_WORKSPACE_DIR: "${build_root}/${device_name}"
+    PLATFORMIO_CORE_DIR:      "${build_root}/${pio_core_dir}"
+
   on_boot:
-    priority: 800
+    priority: -1000
     then:
       - logger.log: "Backlight ON"
       - output.turn_on: backlight_pwm
@@ -19,17 +28,98 @@ esphome:
       - light.turn_on:
           id: back_light
           brightness: 1
+      - output.turn_on: amp_ctrl
 
 esp32:
   variant: esp32p4
   engineering_sample: true
   cpu_frequency: 360MHZ
   flash_size: 16MB
+  partitions: partitions.csv
   framework:
     type: esp-idf
     advanced:
-      execute_from_psram: true
       enable_idf_experimental_features: true
+    # v1.22q: bump the IDF freeRTOS task watchdog (TWDT)
+    # timeout from 5s (default) to 30s. The 5s default is
+    # too aggressive for the P4 + ESP32-C6 wifi co-processor
+    # setup - the SDIO link occasionally takes 6-8 seconds
+    # to recover from a transient. With a 5s timeout, any
+    # wifi hiccup trips the TWDT and the panel reboots
+    # itself (rst:0xc SW_CPU_RESET). 30s gives the SDIO
+    # driver plenty of slack while still catching real
+    # hangs. This is idempotent: ESPHome re-emits the
+    # sdkconfig option on every build.
+    sdkconfig_options:
+      CONFIG_ESP_TASK_WDT_TIMEOUT_S: "30"
+      # v1.22u: WiFi RMT (Radio Mgmt Task) buffer + AMPDU
+      # tuning for the ESP32-C6 wifi co-processor. The
+      # defaults limit throughput on the P4 + C6 link.
+      # Bumping static to 16 and dynamic to 64/64 + 32-
+      # station BA windows matches the vendor IDF examples
+      # for similar 7-10" panel workloads and has been
+      # stable in Crowpanel testing.
+      CONFIG_WIFI_RMT_STATIC_RX_BUFFER_NUM: "16"
+      CONFIG_WIFI_RMT_DYNAMIC_RX_BUFFER_NUM: "64"
+      CONFIG_WIFI_RMT_DYNAMIC_TX_BUFFER_NUM: "64"
+      CONFIG_WIFI_RMT_AMPDU_TX_ENABLED: y
+      CONFIG_WIFI_RMT_TX_BA_WIN: "32"
+      CONFIG_WIFI_RMT_AMPDU_RX_ENABLED: y
+      CONFIG_WIFI_RMT_RX_BA_WIN: "32"
+      # v1.22u: LWIP TCP buffer tuning. The default TCP
+      # send window (16KB) is the bottleneck for the live
+      # state-poll bulk /api/states fetch (200KB+). The
+      # default TCP receive mailbox (6) DoSes when HA
+      # pushes 200+ entity state_changed events in a burst.
+      CONFIG_LWIP_TCP_SND_BUF_DEFAULT: "65534"
+      CONFIG_LWIP_TCP_WND_DEFAULT: "65534"
+      CONFIG_LWIP_TCP_RECVMBOX_SIZE: "64"
+      CONFIG_LWIP_UDP_RECVMBOX_SIZE: "64"
+      CONFIG_LWIP_TCPIP_RECVMBOX_SIZE: "64"
+      CONFIG_LWIP_TCP_SACK_OUT: y
+      # v1.25c7+: enable FreeRTOS trace facility. Required
+      # for uxTaskGetSystemState() (the WLED-style task
+      # monitor's pre-crash state walk).
+      CONFIG_FREERTOS_USE_TRACE_FACILITY: y
+      # Keeps the panic handler in IRAM so it can run even
+      # if the main flash/PSRAM is wedged.
+      CONFIG_ESP32_PANIC_HANDLER_IRAM: y
+      # Prints the interrupt context in the task-dump on
+      # panic.
+      CONFIG_FREERTOS_INTERRUPT_BACKTRACE: y
+      # Catches stack overflow at the precise byte, which
+      # makes it obvious which task is over-running.
+      CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK: y
+      # P4+C6 SDIO wedge fix: reserve an internal-SRAM DMA
+      # pool so the SDIO driver can always satisfy
+      # sdio_push_data_to_queue's buffer alloc even when
+      # the general heap is fragmented. The sdio assert at
+      # sdio_drv.c:896 / 928 was firing ~20s into boot
+      # because tlsf_malloc couldn't find a contiguous
+      # DMA-capable slot for an inbound RPC packet. The
+      # hardening mode carves out a reserved pool that
+      # SDIO / crypto / DMA ops can fall back to.
+      CONFIG_ESP_SYSTEM_MEM_FRAGMENTATION_HARDENING: y
+      # v1.28: route malloc() to PSRAM. P4 hex-mode PSRAM at
+      # 200MHz is comfortably fast for heap traffic (no
+      # perceptible UI or parse slowdown on the 25KB aggregate
+      # JSON). The payoff: every default-allocator allocation
+      # - std::string temporaries in ArduinoJson's
+      # JsonDeserializer::parseObject, std::string copies
+      # from as<std::string>(), the small std::strings in
+      # Entity::state before we migrated to psram_string,
+      # etc. - lands in PSRAM instead of the 384KB internal
+      # heap. With this on, the cxx_exception_stubs aborts
+      # from internal-RAM OOM in std::bad_alloc go away
+      # without us having to convert every remaining
+      # std::string field in ha_autopanel. DMA-capable
+      # allocations stay in internal SRAM because they
+      # explicitly request MALLOC_CAP_INTERNAL via
+      # heap_caps_malloc, which this option doesn't change.
+      # See project_psram_allocator_naming and the
+      # arduinojson.org/v7/how-to/use-external-ram-on-esp32
+      # writeup.
+      CONFIG_SPIRAM_USE_MALLOC: y
 
 psram:
   speed: 200MHz
@@ -50,30 +140,90 @@ esp32_hosted:
   d1_pin: GPIO15
   d2_pin: GPIO16
   d3_pin: GPIO17
+  # v1.22x: lower SDIO frequency 20MHz -> 10MHz. The default
+  # 20MHz causes sdio_rx_get_buffer() to assert in sdio_drv.c:896
+  # (*buf == NULL) when the host drains the SDIO ring buffer
+  # too slowly during a 200KB+ bulk /api/states transfer. The
+  # buffer pool is drained by the httpd task (which is also
+  # parsing JSON + allocating), and at 20MHz the C6 outpaces
+  # the drain. 10MHz gives the host ~2x more time per buffer
+  # without any code change. v1.22v on this hardware survived
+  # the same transfer with the 20MHz default; v1.22w's std::function
+  # fix avoided the secondary abort, but the underlying SDIO
+  # wedge was still present. 10MHz is the documented workaround
+  # for the SDIO link stability issue.
+  sdio_frequency: 10MHz
 
 logger:
-  level: DEBUG
-  baud_rate: 115200
-  logs:
-    lvgl: info
+  hardware_uart: UART0 # alternatively, USB_SERIAL_JTAG
+  level: INFO
+  # logs:
+  #   ha_autopanel: error
 
 api:
   encryption:
     key: !secret encryption_key
+  # Required for ha_autopanel to call HA services (light.turn_on/off, switch.toggle)
+  # and subscribe to state_changed events. Without these the C++ component won't link.
+  homeassistant_services: true
+  homeassistant_states: true
   on_client_connected:
     - logger.log: "HA Connected!"
-    - delay: 1s
-    - script.execute: sync_all_rooms
+    # v1.22w: the auth probe + state subscription are now
+    # self-triggered by the C++ component (HaAutoPanel::loop()
+    # auto-detects the first API connect and queues both via
+    # pending flags, processed in subsequent loop ticks).
+    # The YAML lambdas that used to live here are gone - they
+    # allocated a std::function each invocation, and on a
+    # wedged C6 with a fragmented heap that allocation throw
+    # landed in the httpd worker context, which
+    # -fno-exceptions turned into abort() at PC 0x480dbxxx
+    # (see [[feedback_yaml_lambda_std_function_throw]] for
+    # the first live evidence at 12:21:05.762). The C++
+    # flag-based deferral is allocation-free in the hot path.
+
+# Built-in web server provides the underlying HTTP transport. ha_autopanel
+# registers its /autopanel setup form and /autopanel/save POST handler
+# against this base. The panel UI is not served here; it's drawn on
+# the LVGL display.
+web_server:
+  port: 80
 
 ota:
   - platform: esphome
+
+# Time source for the title bar clock. SNTP works on most networks
+# but the test box here can't reach UDP/123 outbound. The homeassistant
+# time source would be the cleanest fix (asks HA via the API, no
+# extra port) but it triggers a git-context dependency-resolution
+# error in the IDF build when the build dir isn't itself a git
+# repo. For now, keep SNTP and accept that the title bar shows
+# "--:--" until the user's NTP network policy is fixed. A future
+# fix should swap this for the homeassistant platform and put the
+# build dir back inside the project.
+time:
+  - platform: sntp
+    id: sntp_time
+    servers:
+      - 0.pool.ntp.org
+      - time.google.com
+      - time.cloudflare.com
+    timezone: "America/New_York"
+    on_time_sync:
+      then:
+        - logger.log: "NTP time synced"
 
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   ap:
-    ssid: "${friendly_name} Fallback"
-    password: !secret ap_password
+    ssid: "${device_name} Fallback"
+    password: !secret my_ap_password
+  on_connect:
+    then:
+      - delay: 1s
+      - logger.log: "WiFi connected, triggering dynamic discovery..."
+      - lambda: 'id(dynamic_discovery).trigger_discovery();'
 
 i2c:
   - id: bus_a
@@ -81,10 +231,35 @@ i2c:
     scl: GPIO46
     frequency: 400kHz
 
+output:
+  - platform: ledc
+    pin: GPIO31
+    id: backlight_pwm
+  - platform: gpio
+    id: power_light
+    pin: GPIO29
+    inverted: true
+  - platform: gpio
+    id: amp_ctrl
+    pin: GPIO30
+    inverted: true
+
+light:
+  - platform: monochromatic
+    name: "Backlight"
+    output: backlight_pwm
+    id: back_light
+    restore_mode: ALWAYS_ON
+    internal: true
+
+http_request:
+  id: ha_http
+
 i2s_audio:
   - id: i2s_out
     i2s_lrclk_pin: GPIO21
     i2s_bclk_pin: GPIO22
+    i2s_mclk_pin: GPIO24
 
 speaker:
   - platform: i2s_audio
@@ -99,441 +274,6 @@ media_player:
     announcement_pipeline:
       speaker: esp32_speaker
 
-globals:
-  - id: display_dimmed
-    type: bool
-    initial_value: 'false'
-  - id: current_room
-    type: int
-    initial_value: '0'
-  - id: living_room_brightness
-    type: int
-    initial_value: '50'
-  - id: kitchen_brightness
-    type: int
-    initial_value: '50'
-  - id: bedroom_brightness
-    type: int
-    initial_value: '50'
-  - id: bathroom_brightness
-    type: int
-    initial_value: '50'
-  - id: office_brightness
-    type: int
-    initial_value: '50'
-  - id: garage_brightness
-    type: int
-    initial_value: '50'
-  - id: media_volume
-    type: float
-    initial_value: '0.5'
-  - id: living_room_previous
-    type: int
-    initial_value: '50'
-  - id: kitchen_previous
-    type: int
-    initial_value: '50'
-  - id: bedroom_previous
-    type: int
-    initial_value: '50'
-  - id: bathroom_previous
-    type: int
-    initial_value: '50'
-  - id: office_previous
-    type: int
-    initial_value: '50'
-  - id: garage_previous
-    type: int
-    initial_value: '50'
-
-output:
-  - platform: ledc
-    pin: GPIO31
-    id: backlight_pwm
-  - platform: gpio
-    id: power_light
-    pin: GPIO29
-    inverted: true
-  - platform: gpio
-    id: amp_ctrl
-    pin: GPIO30
-
-light:
-  - platform: monochromatic
-    name: "Backlight"
-    output: backlight_pwm
-    id: back_light
-    restore_mode: ALWAYS_ON
-    internal: true
-
-sensor:
-  - platform: wifi_signal
-    id: wifi_rssi_sensor
-    update_interval: 5s
-    on_value:
-      then:
-        - lambda: |-
-            char buf[32];
-            snprintf(buf, sizeof(buf), "%d dBm", (int)x);
-            lv_label_set_text(id(wifi_rssi), buf);
-  - platform: homeassistant
-    id: ha_kitchen_brightness
-    entity_id: sensor.kitchen_overall_brightness
-    on_value:
-      then:
-        - lambda: "id(kitchen_brightness) = static_cast<int>(x);"
-        - lvgl.arc.update:
-            id: kitchen_arc
-            value: !lambda "return id(kitchen_brightness);"
-        - lvgl.label.update:
-            id: kitchen_value
-            text: !lambda |-
-                char buf[8];
-                snprintf(buf, sizeof(buf), "%d%%", id(kitchen_brightness));
-                return std::string(buf);
-  - platform: homeassistant
-    id: ha_bedroom_brightness
-    entity_id: sensor.bedroom_overall_brightness
-    on_value:
-      then:
-        - lambda: "id(bedroom_brightness) = static_cast<int>(x);"
-        - lvgl.arc.update:
-            id: bedroom_arc
-            value: !lambda "return id(bedroom_brightness);"
-        - lvgl.label.update:
-            id: bedroom_value
-            text: !lambda |-
-                char buf[8];
-                snprintf(buf, sizeof(buf), "%d%%", id(bedroom_brightness));
-                return std::string(buf);
-  - platform: homeassistant
-    id: ha_bathroom_brightness
-    entity_id: sensor.bathroom_overall_brightness
-    on_value:
-      then:
-        - lambda: "id(bathroom_brightness) = static_cast<int>(x);"
-        - lvgl.arc.update:
-            id: bathroom_arc
-            value: !lambda "return id(bathroom_brightness);"
-        - lvgl.label.update:
-            id: bathroom_value
-            text: !lambda |-
-                char buf[8];
-                snprintf(buf, sizeof(buf), "%d%%", id(bathroom_brightness));
-                return std::string(buf);
-  - platform: homeassistant
-    id: ha_office_brightness
-    entity_id: sensor.office_overall_brightness
-    on_value:
-      then:
-        - lambda: "id(office_brightness) = static_cast<int>(x);"
-        - lvgl.arc.update:
-            id: office_arc
-            value: !lambda "return id(office_brightness);"
-        - lvgl.label.update:
-            id: office_value
-            text: !lambda |-
-                char buf[8];
-                snprintf(buf, sizeof(buf), "%d%%", id(office_brightness));
-                return std::string(buf);
-  - platform: homeassistant
-    id: ha_garage_brightness
-    entity_id: sensor.garage_overall_brightness
-    on_value:
-      then:
-        - lambda: "id(garage_brightness) = static_cast<int>(x);"
-        - lvgl.arc.update:
-            id: garage_arc
-            value: !lambda "return id(garage_brightness);"
-        - lvgl.label.update:
-            id: garage_value
-            text: !lambda |-
-                char buf[8];
-                snprintf(buf, sizeof(buf), "%d%%", id(garage_brightness));
-                return std::string(buf);
-
-binary_sensor:
-  - platform: touchscreen
-    id: touch_wake
-    touchscreen_id: my_touchscreen
-    x_min: 0
-    y_min: 0
-    x_max: 1024
-    y_max: 600
-    on_press:
-      then:
-        - if:
-            condition:
-              lambda: "return id(display_dimmed);"
-            then:
-              - light.turn_on: back_light
-              - lambda: "id(display_dimmed) = false;"
-              - script.execute: screentime
-  - platform: homeassistant
-    id: ha_living_room_state
-    entity_id: binary_sensor.living_room_any_lights_on
-    on_state:
-      then:
-        - script.execute: update_living_room_btn
-  - platform: homeassistant
-    id: ha_kitchen_state
-    entity_id: binary_sensor.kitchen_any_lights_on
-    on_state:
-      then:
-        - script.execute: update_kitchen_btn
-  - platform: homeassistant
-    id: ha_bedroom_state
-    entity_id: binary_sensor.bedroom_any_lights_on
-    on_state:
-      then:
-        - script.execute: update_bedroom_btn
-  - platform: homeassistant
-    id: ha_bathroom_state
-    entity_id: binary_sensor.bathroom_any_lights_on
-    on_state:
-      then:
-        - script.execute: update_bathroom_btn
-  - platform: homeassistant
-    id: ha_office_state
-    entity_id: binary_sensor.office_any_lights_on
-    on_state:
-      then:
-        - script.execute: update_office_btn
-  - platform: homeassistant
-    id: ha_garage_state
-    entity_id: binary_sensor.garage_any_lights_on
-    on_state:
-      then:
-        - script.execute: update_garage_btn
-
-script:
-  - id: screentime
-    mode: restart
-    then:
-      - light.turn_on: back_light
-      - lambda: "id(display_dimmed) = false;"
-      - delay: 60s
-      - light.turn_off: back_light
-      - lambda: "id(display_dimmed) = true;"
-  - id: send_living_room
-    mode: restart
-    then:
-      - homeassistant.service:
-          service: light.turn_on
-          data:
-            area_id: living_room
-            brightness_pct: !lambda "return id(living_room_brightness);"
-  - id: send_kitchen
-    mode: restart
-    then:
-      - homeassistant.service:
-          service: light.turn_on
-          data:
-            area_id: kitchen
-            brightness_pct: !lambda "return id(kitchen_brightness);"
-  - id: send_bedroom
-    mode: restart
-    then:
-      - homeassistant.service:
-          service: light.turn_on
-          data:
-            area_id: bedroom
-            brightness_pct: !lambda "return id(bedroom_brightness);"
-  - id: send_bathroom
-    mode: restart
-    then:
-      - homeassistant.service:
-          service: light.turn_on
-          data:
-            area_id: bathroom
-            brightness_pct: !lambda "return id(bathroom_brightness);"
-  - id: send_office
-    mode: restart
-    then:
-      - homeassistant.service:
-          service: light.turn_on
-          data:
-            area_id: office
-            brightness_pct: !lambda "return id(office_brightness);"
-  - id: send_garage
-    mode: restart
-    then:
-      - homeassistant.service:
-          service: light.turn_on
-          data:
-            area_id: garage
-            brightness_pct: !lambda "return id(garage_brightness);"
-  - id: update_living_room_btn
-    then:
-      - if:
-          condition:
-            lambda: 'return id(ha_living_room_state).state;'
-          then:
-            - lvgl.button.update:
-                id: living_room_btn
-                bg_color: 0xFFFF00
-            - lvgl.label.update:
-                id: living_room_btn_label
-                text_color: 0x222222
-          else:
-            - lvgl.button.update:
-                id: living_room_btn
-                bg_color: 0x222222
-            - lvgl.label.update:
-                id: living_room_btn_label
-                text_color: 0xFFFF00
-  - id: update_kitchen_btn
-    then:
-      - if:
-          condition:
-            lambda: 'return id(ha_kitchen_state).state;'
-          then:
-            - lvgl.button.update:
-                id: kitchen_btn
-                bg_color: 0x00FFFF
-            - lvgl.label.update:
-                id: kitchen_btn_label
-                text_color: 0x222222
-          else:
-            - lvgl.button.update:
-                id: kitchen_btn
-                bg_color: 0x222222
-            - lvgl.label.update:
-                id: kitchen_btn_label
-                text_color: 0x00FFFF
-  - id: update_bedroom_btn
-    then:
-      - if:
-          condition:
-            lambda: 'return id(ha_bedroom_state).state;'
-          then:
-            - lvgl.button.update:
-                id: bedroom_btn
-                bg_color: 0xFF00FF
-            - lvgl.label.update:
-                id: bedroom_btn_label
-                text_color: 0x222222
-          else:
-            - lvgl.button.update:
-                id: bedroom_btn
-                bg_color: 0x222222
-            - lvgl.label.update:
-                id: bedroom_btn_label
-                text_color: 0xFF00FF
-  - id: update_bathroom_btn
-    then:
-      - if:
-          condition:
-            lambda: 'return id(ha_bathroom_state).state;'
-          then:
-            - lvgl.button.update:
-                id: bathroom_btn
-                bg_color: 0x00FF00
-            - lvgl.label.update:
-                id: bathroom_btn_label
-                text_color: 0x222222
-          else:
-            - lvgl.button.update:
-                id: bathroom_btn
-                bg_color: 0x222222
-            - lvgl.label.update:
-                id: bathroom_btn_label
-                text_color: 0x00FF00
-  - id: update_office_btn
-    then:
-      - if:
-          condition:
-            lambda: 'return id(ha_office_state).state;'
-          then:
-            - lvgl.button.update:
-                id: office_btn
-                bg_color: 0xFF8800
-            - lvgl.label.update:
-                id: office_btn_label
-                text_color: 0x222222
-          else:
-            - lvgl.button.update:
-                id: office_btn
-                bg_color: 0x222222
-            - lvgl.label.update:
-                id: office_btn_label
-                text_color: 0xFF8800
-  - id: update_garage_btn
-    then:
-      - if:
-          condition:
-            lambda: 'return id(ha_garage_state).state;'
-          then:
-            - lvgl.button.update:
-                id: garage_btn
-                bg_color: 0x8800FF
-            - lvgl.label.update:
-                id: garage_btn_label
-                text_color: 0x222222
-          else:
-            - lvgl.button.update:
-                id: garage_btn
-                bg_color: 0x222222
-            - lvgl.label.update:
-                id: garage_btn_label
-                text_color: 0x8800FF
-  - id: sync_all_rooms
-    then:
-      - lvgl.arc.update:
-          id: living_room_arc
-          value: !lambda "return id(living_room_brightness);"
-      - lvgl.label.update:
-          id: living_room_value
-          text: !lambda |-
-              char buf[8];
-              snprintf(buf, sizeof(buf), "%d%%", id(living_room_brightness));
-              return std::string(buf);
-      - lvgl.arc.update:
-          id: kitchen_arc
-          value: !lambda "return id(kitchen_brightness);"
-      - lvgl.label.update:
-          id: kitchen_value
-          text: !lambda |-
-              char buf[8];
-              snprintf(buf, sizeof(buf), "%d%%", id(kitchen_brightness));
-              return std::string(buf);
-      - lvgl.arc.update:
-          id: bedroom_arc
-          value: !lambda "return id(bedroom_brightness);"
-      - lvgl.label.update:
-          id: bedroom_value
-          text: !lambda |-
-              char buf[8];
-              snprintf(buf, sizeof(buf), "%d%%", id(bedroom_brightness));
-              return std::string(buf);
-      - lvgl.arc.update:
-          id: bathroom_arc
-          value: !lambda "return id(bathroom_brightness);"
-      - lvgl.label.update:
-          id: bathroom_value
-          text: !lambda |-
-              char buf[8];
-              snprintf(buf, sizeof(buf), "%d%%", id(bathroom_brightness));
-              return std::string(buf);
-      - lvgl.arc.update:
-          id: office_arc
-          value: !lambda "return id(office_brightness);"
-      - lvgl.label.update:
-          id: office_value
-          text: !lambda |-
-              char buf[8];
-              snprintf(buf, sizeof(buf), "%d%%", id(office_brightness));
-              return std::string(buf);
-      - lvgl.arc.update:
-          id: garage_arc
-          value: !lambda "return id(garage_brightness);"
-      - lvgl.label.update:
-          id: garage_value
-          text: !lambda |-
-              char buf[8];
-              snprintf(buf, sizeof(buf), "%d%%", id(garage_brightness));
-              return std::string(buf);
-
 touchscreen:
   - platform: gt911
     id: my_touchscreen
@@ -545,8 +285,8 @@ touchscreen:
       swap_xy: false
       mirror_x: false
       mirror_y: false
-    on_touch:
-      - script.execute: screentime
+    # on_touch:
+    #   - logger.log: "Touch detected"
 
 display:
   - platform: mipi_dsi
@@ -564,992 +304,111 @@ display:
 
 font:
   - file: "gfonts://Roboto"
-    id: font_large
+    id: font_xl
     size: 28
     bpp: 4
-    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°%/<>[]{}|: "
   - file: "gfonts://Roboto"
-    id: font_medium
+    id: font_lg
+    size: 24
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_md
     size: 20
     bpp: 4
-    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°%/<>[]{}|: "
   - file: "gfonts://Roboto"
-    id: font_small
+    id: font_sm
+    size: 16
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: font_button
     size: 14
     bpp: 4
-    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-°%/<>[]{}|: "
 
 lvgl:
   displays:
     - my_display
   touchscreens:
     - my_touchscreen
-  buffer_size: 50%
+  buffer_size: 100%
+  full_refresh: true
   byte_order: little_endian
   color_depth: 16
   log_level: INFO
   bg_color: 0x111827
-  text_font: font_medium
-  pages:
-    # Page 1: Room Controls (3x2 grid)
-    - id: rooms_page
-      scrollable: false
-      widgets:
-        - obj:
-            height: 600
-            width: 1024
-            align: CENTER
-            pad_all: 0
-            border_width: 0
-            bg_color: 0x111827
-            widgets:
-              # Living Room (top-left)
-              - obj:
-                  x: 10
-                  y: 12
-                  width: 330
-                  height: 250
-                  bg_color: 0x1a1a2e
-                  radius: 12
-                  border_width: 2
-                  border_color: 0xFFFF00
-                  scrollable: false
-                  widgets:
-                    - label:
-                        text: "LIVING ROOM"
-                        text_color: 0xFFFFFF
-                        text_font: font_small
-                        align: CENTER
-                        y: -10
-                    - label:
-                        id: living_room_value
-                        text: "50%"
-                        text_color: 0xFFFF00
-                        text_font: font_medium
-                        align: CENTER
-                        y: +10
-                    - arc:
-                        id: living_room_arc
-                        align: CENTER
-                        width: 240
-                        height: 240
-                        y: +15
-                        value: 50
-                        min_value: 0
-                        max_value: 100
-                        start_angle: 135
-                        end_angle: 45
-                        arc_color: 0x404040
-                        arc_width: 20
-                        indicator:
-                          arc_color: 0xFFFF00
-                          arc_width: 20
-                        knob:
-                          bg_color: 0xFFFFFF
-                          radius: 9999
-                          border_width: 3
-                          border_color: 0xFFFF00
-                        adjustable: true
-                        on_value:
-                          then:
-                            - lambda: "id(living_room_brightness) = x; if (x > 0) id(living_room_previous) = x;"
-                            - script.execute: send_living_room
-                            - script.execute: screentime
-                    - button:
-                        align: CENTER
-                        y: +60
-                        width: 120
-                        height: 35
-                        radius: 6
-                        border_width: 2
-                        border_color: 0xFFFF00
-                        bg_color: 0x222222
-                        id: living_room_btn
-                        on_click:
-                          then:
-                            - script.execute: screentime
-                            - if:
-                                condition:
-                                  lambda: 'return id(ha_living_room_state).state;'
-                                then:
-                                  - homeassistant.service:
-                                      service: light.turn_off
-                                      data:
-                                        area_id: living_room
-                                else:
-                                  - lambda: |-
-                                      if (id(living_room_brightness) == 0) {
-                                        id(living_room_brightness) = id(living_room_previous) > 0 ? id(living_room_previous) : 10;
-                                      }
-                                  - homeassistant.service:
-                                      service: light.turn_on
-                                      data:
-                                        area_id: living_room
-                                        brightness_pct: !lambda "return id(living_room_brightness);"
-                        widgets:
-                          - label:
-                              id: living_room_btn_label
-                              text: "ON/OFF"
-                              text_color: 0xFFFF00
-                              text_font: font_small
-                              align: CENTER
-              # Kitchen (top-center)
-              - obj:
-                  x: 347
-                  y: 12
-                  width: 330
-                  height: 250
-                  bg_color: 0x1a1a2e
-                  radius: 12
-                  border_width: 2
-                  border_color: 0x00FFFF
-                  scrollable: false
-                  widgets:
-                    - label:
-                        text: "KITCHEN"
-                        text_color: 0xFFFFFF
-                        text_font: font_small
-                        align: CENTER
-                        y: -10
-                    - label:
-                        id: kitchen_value
-                        text: "50%"
-                        text_color: 0x00FFFF
-                        text_font: font_medium
-                        align: CENTER
-                        y: +10
-                    - arc:
-                        id: kitchen_arc
-                        align: CENTER
-                        width: 240
-                        height: 240
-                        y: +15
-                        value: 50
-                        min_value: 0
-                        max_value: 100
-                        start_angle: 135
-                        end_angle: 45
-                        arc_color: 0x404040
-                        arc_width: 20
-                        indicator:
-                          arc_color: 0x00FFFF
-                          arc_width: 20
-                        knob:
-                          bg_color: 0xFFFFFF
-                          radius: 9999
-                          border_width: 3
-                          border_color: 0x00FFFF
-                        adjustable: true
-                        on_value:
-                          then:
-                            - lambda: "id(kitchen_brightness) = x; if (x > 0) id(kitchen_previous) = x;"
-                            - script.execute: send_kitchen
-                            - script.execute: screentime
-                    - button:
-                        align: CENTER
-                        y: +60
-                        width: 120
-                        height: 35
-                        radius: 6
-                        border_width: 2
-                        border_color: 0x00FFFF
-                        bg_color: 0x222222
-                        id: kitchen_btn
-                        on_click:
-                          then:
-                            - script.execute: screentime
-                            - if:
-                                condition:
-                                  lambda: 'return id(ha_kitchen_state).state;'
-                                then:
-                                  - homeassistant.service:
-                                      service: light.turn_off
-                                      data:
-                                        area_id: kitchen
-                                else:
-                                  - lambda: |-
-                                      if (id(kitchen_brightness) == 0) {
-                                        id(kitchen_brightness) = id(kitchen_previous) > 0 ? id(kitchen_previous) : 10;
-                                      }
-                                  - homeassistant.service:
-                                      service: light.turn_on
-                                      data:
-                                        area_id: kitchen
-                                        brightness_pct: !lambda "return id(kitchen_brightness);"
-                        widgets:
-                          - label:
-                              id: kitchen_btn_label
-                              text: "ON/OFF"
-                              text_color: 0x00FFFF
-                              text_font: font_small
-                              align: CENTER
-              # Bedroom (top-right)
-              - obj:
-                  x: 684
-                  y: 12
-                  width: 330
-                  height: 250
-                  bg_color: 0x1a1a2e
-                  radius: 12
-                  border_width: 2
-                  border_color: 0xFF00FF
-                  scrollable: false
-                  widgets:
-                    - label:
-                        text: "BEDROOM"
-                        text_color: 0xFFFFFF
-                        text_font: font_small
-                        align: CENTER
-                        y: -10
-                    - label:
-                        id: bedroom_value
-                        text: "50%"
-                        text_color: 0xFF00FF
-                        text_font: font_medium
-                        align: CENTER
-                        y: +10
-                    - arc:
-                        id: bedroom_arc
-                        align: CENTER
-                        width: 240
-                        height: 240
-                        y: +15
-                        value: 50
-                        min_value: 0
-                        max_value: 100
-                        start_angle: 135
-                        end_angle: 45
-                        arc_color: 0x404040
-                        arc_width: 20
-                        indicator:
-                          arc_color: 0xFF00FF
-                          arc_width: 20
-                        knob:
-                          bg_color: 0xFFFFFF
-                          radius: 9999
-                          border_width: 3
-                          border_color: 0xFF00FF
-                        adjustable: true
-                        on_value:
-                          then:
-                            - lambda: "id(bedroom_brightness) = x; if (x > 0) id(bedroom_previous) = x;"
-                            - script.execute: send_bedroom
-                            - script.execute: screentime
-                    - button:
-                        align: CENTER
-                        y: +60
-                        width: 120
-                        height: 35
-                        radius: 6
-                        border_width: 2
-                        border_color: 0xFF00FF
-                        bg_color: 0x222222
-                        id: bedroom_btn
-                        on_click:
-                          then:
-                            - script.execute: screentime
-                            - if:
-                                condition:
-                                  lambda: 'return id(ha_bedroom_state).state;'
-                                then:
-                                  - homeassistant.service:
-                                      service: light.turn_off
-                                      data:
-                                        area_id: bedroom
-                                else:
-                                  - lambda: |-
-                                      if (id(bedroom_brightness) == 0) {
-                                        id(bedroom_brightness) = id(bedroom_previous) > 0 ? id(bedroom_previous) : 10;
-                                      }
-                                  - homeassistant.service:
-                                      service: light.turn_on
-                                      data:
-                                        area_id: bedroom
-                                        brightness_pct: !lambda "return id(bedroom_brightness);"
-                        widgets:
-                          - label:
-                              id: bedroom_btn_label
-                              text: "ON/OFF"
-                              text_color: 0xFF00FF
-                              text_font: font_small
-                              align: CENTER
-              # Bathroom (bottom-left)
-              - obj:
-                  x: 10
-                  y: 277
-                  width: 330
-                  height: 250
-                  bg_color: 0x1a1a2e
-                  radius: 12
-                  border_width: 2
-                  border_color: 0x00FF00
-                  scrollable: false
-                  widgets:
-                    - label:
-                        text: "BATHROOM"
-                        text_color: 0xFFFFFF
-                        text_font: font_small
-                        align: CENTER
-                        y: -10
-                    - label:
-                        id: bathroom_value
-                        text: "50%"
-                        text_color: 0x00FF00
-                        text_font: font_medium
-                        align: CENTER
-                        y: +10
-                    - arc:
-                        id: bathroom_arc
-                        align: CENTER
-                        width: 240
-                        height: 240
-                        y: +15
-                        value: 50
-                        min_value: 0
-                        max_value: 100
-                        start_angle: 135
-                        end_angle: 45
-                        arc_color: 0x404040
-                        arc_width: 20
-                        indicator:
-                          arc_color: 0x00FF00
-                          arc_width: 20
-                        knob:
-                          bg_color: 0xFFFFFF
-                          radius: 9999
-                          border_width: 3
-                          border_color: 0x00FF00
-                        adjustable: true
-                        on_value:
-                          then:
-                            - lambda: "id(bathroom_brightness) = x; if (x > 0) id(bathroom_previous) = x;"
-                            - script.execute: send_bathroom
-                            - script.execute: screentime
-                    - button:
-                        align: CENTER
-                        y: +60
-                        width: 120
-                        height: 35
-                        radius: 6
-                        border_width: 2
-                        border_color: 0x00FF00
-                        bg_color: 0x222222
-                        id: bathroom_btn
-                        on_click:
-                          then:
-                            - script.execute: screentime
-                            - if:
-                                condition:
-                                  lambda: 'return id(ha_bathroom_state).state;'
-                                then:
-                                  - homeassistant.service:
-                                      service: light.turn_off
-                                      data:
-                                        area_id: bathroom
-                                else:
-                                  - lambda: |-
-                                      if (id(bathroom_brightness) == 0) {
-                                        id(bathroom_brightness) = id(bathroom_previous) > 0 ? id(bathroom_previous) : 10;
-                                      }
-                                  - homeassistant.service:
-                                      service: light.turn_on
-                                      data:
-                                        area_id: bathroom
-                                        brightness_pct: !lambda "return id(bathroom_brightness);"
-                        widgets:
-                          - label:
-                              id: bathroom_btn_label
-                              text: "ON/OFF"
-                              text_color: 0x00FF00
-                              text_font: font_small
-                              align: CENTER
-              # Office (bottom-center)
-              - obj:
-                  x: 347
-                  y: 277
-                  width: 330
-                  height: 250
-                  bg_color: 0x1a1a2e
-                  radius: 12
-                  border_width: 2
-                  border_color: 0xFF8800
-                  scrollable: false
-                  widgets:
-                    - label:
-                        text: "OFFICE"
-                        text_color: 0xFFFFFF
-                        text_font: font_small
-                        align: CENTER
-                        y: -10
-                    - label:
-                        id: office_value
-                        text: "50%"
-                        text_color: 0xFF8800
-                        text_font: font_medium
-                        align: CENTER
-                        y: +10
-                    - arc:
-                        id: office_arc
-                        align: CENTER
-                        width: 240
-                        height: 240
-                        y: +15
-                        value: 50
-                        min_value: 0
-                        max_value: 100
-                        start_angle: 135
-                        end_angle: 45
-                        arc_color: 0x404040
-                        arc_width: 20
-                        indicator:
-                          arc_color: 0xFF8800
-                          arc_width: 20
-                        knob:
-                          bg_color: 0xFFFFFF
-                          radius: 9999
-                          border_width: 3
-                          border_color: 0xFF8800
-                        adjustable: true
-                        on_value:
-                          then:
-                            - lambda: "id(office_brightness) = x; if (x > 0) id(office_previous) = x;"
-                            - script.execute: send_office
-                            - script.execute: screentime
-                    - button:
-                        align: CENTER
-                        y: +60
-                        width: 120
-                        height: 35
-                        radius: 6
-                        border_width: 2
-                        border_color: 0xFF8800
-                        bg_color: 0x222222
-                        id: office_btn
-                        on_click:
-                          then:
-                            - script.execute: screentime
-                            - if:
-                                condition:
-                                  lambda: 'return id(ha_office_state).state;'
-                                then:
-                                  - homeassistant.service:
-                                      service: light.turn_off
-                                      data:
-                                        area_id: office
-                                else:
-                                  - lambda: |-
-                                      if (id(office_brightness) == 0) {
-                                        id(office_brightness) = id(office_previous) > 0 ? id(office_previous) : 10;
-                                      }
-                                  - homeassistant.service:
-                                      service: light.turn_on
-                                      data:
-                                        area_id: office
-                                        brightness_pct: !lambda "return id(office_brightness);"
-                        widgets:
-                          - label:
-                              id: office_btn_label
-                              text: "ON/OFF"
-                              text_color: 0xFF8800
-                              text_font: font_small
-                              align: CENTER
-              # Garage (bottom-right)
-              - obj:
-                  x: 684
-                  y: 277
-                  width: 330
-                  height: 250
-                  bg_color: 0x1a1a2e
-                  radius: 12
-                  border_width: 2
-                  border_color: 0x8800FF
-                  scrollable: false
-                  widgets:
-                    - label:
-                        text: "GARAGE"
-                        text_color: 0xFFFFFF
-                        text_font: font_small
-                        align: CENTER
-                        y: -10
-                    - label:
-                        id: garage_value
-                        text: "50%"
-                        text_color: 0x8800FF
-                        text_font: font_medium
-                        align: CENTER
-                        y: +10
-                    - arc:
-                        id: garage_arc
-                        align: CENTER
-                        width: 240
-                        height: 240
-                        y: +15
-                        value: 50
-                        min_value: 0
-                        max_value: 100
-                        start_angle: 135
-                        end_angle: 45
-                        arc_color: 0x404040
-                        arc_width: 20
-                        indicator:
-                          arc_color: 0x8800FF
-                          arc_width: 20
-                        knob:
-                          bg_color: 0xFFFFFF
-                          radius: 9999
-                          border_width: 3
-                          border_color: 0x8800FF
-                        adjustable: true
-                        on_value:
-                          then:
-                            - lambda: "id(garage_brightness) = x; if (x > 0) id(garage_previous) = x;"
-                            - script.execute: send_garage
-                            - script.execute: screentime
-                    - button:
-                        align: CENTER
-                        y: +60
-                        width: 120
-                        height: 35
-                        radius: 6
-                        border_width: 2
-                        border_color: 0x8800FF
-                        bg_color: 0x222222
-                        id: garage_btn
-                        on_click:
-                          then:
-                            - script.execute: screentime
-                            - if:
-                                condition:
-                                  lambda: 'return id(ha_garage_state).state;'
-                                then:
-                                  - homeassistant.service:
-                                      service: light.turn_off
-                                      data:
-                                        area_id: garage
-                                else:
-                                  - lambda: |-
-                                      if (id(garage_brightness) == 0) {
-                                        id(garage_brightness) = id(garage_previous) > 0 ? id(garage_previous) : 10;
-                                      }
-                                  - homeassistant.service:
-                                      service: light.turn_on
-                                      data:
-                                        area_id: garage
-                                        brightness_pct: !lambda "return id(garage_brightness);"
-                        widgets:
-                          - label:
-                              id: garage_btn_label
-                              text: "ON/OFF"
-                              text_color: 0x8800FF
-                              text_font: font_small
-                              align: CENTER
-              # Navigation buttons
-              - button:
-                  x: 362
-                  y: 540
-                  width: 150
-                  height: 40
-                  radius: 8
-                  border_width: 2
-                  border_color: 0xFFFFFF
-                  bg_color: 0x222222
-                  on_click:
-                    then:
-                      - lvgl.page.show: media_page
-                  widgets:
-                    - label:
-                        text: "MEDIA"
-                        text_color: 0xFFFFFF
-                        text_font: font_small
-                        align: CENTER
-              - button:
-                  x: 532
-                  y: 540
-                  width: 150
-                  height: 40
-                  radius: 8
-                  border_width: 2
-                  border_color: 0xFFFFFF
-                  bg_color: 0x222222
-                  on_click:
-                    then:
-                      - lvgl.page.show: debug_page
-                  widgets:
-                    - label:
-                        text: "DEBUG"
-                        text_color: 0xFFFFFF
-                        text_font: font_small
-                        align: CENTER
+  text_font: font_xl  # default; the ha_autopanel C++ swaps to font_lg / font_md / font_sm for long room names
+  # Flex layout is enabled by the ha_autopanel component's __init__.py
+  # (it calls lvgl.defines.add_define("LV_USE_FLEX", "1") since the
+  # lv_use_flex YAML key isn't part of the lvgl config schema). The
+  # title-bar right cluster and the room-card rows both use
+  # lv_obj_set_flex_flow so the layout reflows across screen widths.
+  widgets:
+    # Widgets needed by dynamic_entity_discovery component
+    - arc: {}
+    - label: {}
 
-    # Page 2: Media Player
-    - id: media_page
-      widgets:
-        - obj:
-            height: 600
-            width: 1024
-            align: CENTER
-            pad_all: 0
-            border_width: 0
-            bg_color: 0x111827
-            widgets:
-              - label:
-                  text: "MEDIA PLAYER"
-                  text_color: 0xFFFFFF
-                  text_font: font_large
-                  align: CENTER
-                  y: -260
-              - label:
-                  id: media_title
-                  text: "--"
-                  text_color: 0x38BDF8
-                  text_font: font_medium
-                  align: CENTER
-                  y: -200
-              - label:
-                  id: media_artist
-                  text: "--"
-                  text_color: 0x9CA3AF
-                  text_font: font_small
-                  align: CENTER
-                  y: -140
-              # Volume slider
-              - obj:
-                  align: CENTER
-                  y: -50
-                  width: 500
-                  height: 100
-                  bg_color: 0x1a1a2e
-                  radius: 0
-                  widgets:
-                    - label:
-                        text: "Volume"
-                        text_color: 0xFFFFFF
-                        text_font: font_small
-                        align: CENTER
-                        y: -25
-                    - slider:
-                        id: volume_slider
-                        align: CENTER
-                        y: +5
-                        width: 400
-                        height: 20
-                        min_value: 0
-                        max_value: 100
-                        value: 50
-                        on_value:
-                          then:
-                            - lambda: "id(media_volume) = x / 100.0;"
-                            - homeassistant.service:
-                                service: media_player.volume_set
-                                data:
-                                  entity_id: media_player.main
-                                data_template:
-                                  volume_level: !lambda "return id(media_volume);"
-              # Transport controls
-              - button:
-                  align: CENTER
-                  x: -130
-                  y: +60
-                  width: 100
-                  height: 100
-                  radius: 50
-                  border_width: 3
-                  border_color: 0x38BDF8
-                  bg_color: 0x1a1a2e
-                  on_click:
-                    then:
-                      - homeassistant.service:
-                          service: media_player.media_previous_track
-                          data:
-                            entity_id: media_player.main
-                  widgets:
-                    - label:
-                        text: "|<"
-                        text_color: 0x38BDF8
-                        text_font: font_medium
-                        align: CENTER
-              - button:
-                  align: CENTER
-                  y: +60
-                  width: 100
-                  height: 100
-                  radius: 50
-                  border_width: 3
-                  border_color: 0x38BDF8
-                  bg_color: 0x1a1a2e
-                  on_click:
-                    then:
-                      - homeassistant.service:
-                          service: media_player.media_play_pause
-                          data:
-                            entity_id: media_player.main
-                  widgets:
-                    - label:
-                        text: "PLAY"
-                        text_color: 0x38BDF8
-                        text_font: font_medium
-                        align: CENTER
-              - button:
-                  align: CENTER
-                  x: +130
-                  y: +60
-                  width: 100
-                  height: 100
-                  radius: 50
-                  border_width: 3
-                  border_color: 0x38BDF8
-                  bg_color: 0x1a1a2e
-                  on_click:
-                    then:
-                      - homeassistant.service:
-                          service: media_player.media_next_track
-                          data:
-                            entity_id: media_player.main
-                  widgets:
-                    - label:
-                        text: ">|"
-                        text_color: 0x38BDF8
-                        text_font: font_medium
-                        align: CENTER
-              # Radio station
-              - button:
-                  align: CENTER
-                  y: +180
-                  width: 200
-                  height: 50
-                  radius: 25
-                  border_width: 2
-                  border_color: 0xFF6B6B
-                  bg_color: 0x1a1a2e
-                  on_click:
-                    then:
-                      - homeassistant.service:
-                          service: media_player.play_media
-                          data:
-                            entity_id: media_player.main
-                          data_template:
-                            media_content_id: "https://0nlineradio.radioho.st/lounge-ibiza-chillout-lounge?ref=rb26"
-                            media_content_type: music
-                  widgets:
-                    - label:
-                        text: "RADIO"
-                        text_color: 0xFF6B6B
-                        text_font: font_medium
-                        align: CENTER
-              # Navigation buttons
-              - button:
-                  x: 362
-                  y: 540
-                  width: 150
-                  height: 40
-                  radius: 8
-                  border_width: 2
-                  border_color: 0xFFFFFF
-                  bg_color: 0x222222
-                  on_click:
-                    then:
-                      - lvgl.page.show: rooms_page
-                  widgets:
-                    - label:
-                        text: "ROOMS"
-                        text_color: 0xFFFFFF
-                        text_font: font_small
-                        align: CENTER
-              - button:
-                  x: 532
-                  y: 540
-                  width: 150
-                  height: 40
-                  radius: 8
-                  border_width: 2
-                  border_color: 0xFFFFFF
-                  bg_color: 0x222222
-                  on_click:
-                    then:
-                      - lvgl.page.show: debug_page
-                  widgets:
-                    - label:
-                        text: "DEBUG"
-                        text_color: 0xFFFFFF
-                        text_font: font_small
-                        align: CENTER
+external_components:
+  - source:
+      type: local
+      path: C:/ESPHome_Projects/esphome_dynamic_entity_discovery/components
+    components: [ha_autopanel]
 
-    # Page 3: Debug/Status
-    - id: debug_page
-      widgets:
-        - obj:
-            height: 600
-            width: 1024
-            align: CENTER
-            pad_all: 0
-            border_width: 0
-            bg_color: 0x111827
-            widgets:
-              - label:
-                  text: "SYSTEM STATUS"
-                  text_color: 0xFFFFFF
-                  text_font: font_large
-                  align: CENTER
-                  y: -230
-              # WiFi Status (top-left)
-              - obj:
-                  align: CENTER
-                  x: -250
-                  y: -155
-                  width: 400
-                  height: 100
-                  bg_color: 0x1a1a2e
-                  radius: 10
-                  widgets:
-                    - label:
-                        text: "WiFi Signal"
-                        text_color: 0x9CA3AF
-                        text_font: font_small
-                        align: CENTER
-                        y: -30
-                    - label:
-                        id: wifi_rssi
-                        text: "--- dBm"
-                        text_color: 0x38BDF8
-                        text_font: font_medium
-                        align: CENTER
-                        y: 10
-              # Memory Usage (top-right)
-              - obj:
-                  align: CENTER
-                  x: +250
-                  y: -155
-                  width: 400
-                  height: 100
-                  bg_color: 0x1a1a2e
-                  radius: 10
-                  widgets:
-                    - label:
-                        text: "Free Memory"
-                        text_color: 0x9CA3AF
-                        text_font: font_small
-                        align: CENTER
-                        y: -30
-                    - label:
-                        id: free_memory
-                        text: "--- KB"
-                        text_color: 0x38BDF8
-                        text_font: font_medium
-                        align: CENTER
-                        y: 10
-              # Uptime (bottom-left)
-              - obj:
-                  align: CENTER
-                  x: -250
-                  y: -25
-                  width: 400
-                  height: 100
-                  bg_color: 0x1a1a2e
-                  radius: 10
-                  widgets:
-                    - label:
-                        text: "Uptime"
-                        text_color: 0x9CA3AF
-                        text_font: font_small
-                        align: CENTER
-                        y: -30
-                    - label:
-                        id: uptime
-                        text: "--:--:--"
-                        text_color: 0x38BDF8
-                        text_font: font_medium
-                        align: CENTER
-                        y: 10
-              # ESPHome Version (bottom-right)
-              - obj:
-                  align: CENTER
-                  x: +250
-                  y: -25
-                  width: 400
-                  height: 100
-                  bg_color: 0x1a1a2e
-                  radius: 10
-                  widgets:
-                    - label:
-                        text: "ESPHome"
-                        text_color: 0x9CA3AF
-                        text_font: font_small
-                        align: CENTER
-                        y: -30
-                    - label:
-                        text: "${esphome_version}"
-                        text_color: 0x38BDF8
-                        text_font: font_medium
-                        align: CENTER
-                        y: 10
-              # Home Assistant Connection (center)
-              - obj:
-                  align: CENTER
-                  y: +110
-                  width: 400
-                  height: 100
-                  bg_color: 0x1a1a2e
-                  radius: 10
-                  widgets:
-                    - label:
-                        text: "HA Connection"
-                        text_color: 0x9CA3AF
-                        text_font: font_small
-                        align: CENTER
-                        y: -30
-                    - label:
-                        id: ha_status
-                        text: "Connecting..."
-                        text_color: 0xFFA500
-                        text_font: font_medium
-                        align: CENTER
-                        y: 10
-              # Navigation buttons
-              - button:
-                  x: 362
-                  y: 540
-                  width: 150
-                  height: 40
-                  radius: 8
-                  border_width: 2
-                  border_color: 0xFFFFFF
-                  bg_color: 0x222222
-                  on_click:
-                    then:
-                      - lvgl.page.show: rooms_page
-                  widgets:
-                    - label:
-                        text: "ROOMS"
-                        text_color: 0xFFFFFF
-                        text_font: font_small
-                        align: CENTER
-              - button:
-                  x: 532
-                  y: 540
-                  width: 150
-                  height: 40
-                  radius: 8
-                  border_width: 2
-                  border_color: 0xFFFFFF
-                  bg_color: 0x222222
-                  on_click:
-                    then:
-                      - lvgl.page.show: media_page
-                  widgets:
-                    - label:
-                        text: "MEDIA"
-                        text_color: 0xFFFFFF
-                        text_font: font_small
-                        align: CENTER
-
-interval:
-  - interval: 5s
-    then:
-      - lambda: |-
-          // Update free memory
-          uint32_t free_heap = esp_get_free_heap_size();
-          char mem_buf[20];
-          snprintf(mem_buf, sizeof(mem_buf), "%lu KB", free_heap / 1024);
-          lv_label_set_text(id(free_memory), mem_buf);
+ha_autopanel:
+  id: dynamic_discovery
+  # ha_api_url and ha_api_password are still required here for now,
+  # but in the no-code vision they will move to LittleFS and be set
+  # via the /autopanel web form. defaults below are empty so the user
+  # doesn't have to hardcode area/entity/domain filters.
+  ha_api_url: "http://homeassistant.local:8123"
+  ha_api_password: !secret my_ha_api_password
+  http_request_ref: ha_http
+  # Wire the title bar clock to the SNTP time source. The id has
+  # to match the `id:` in the `time:` block above.
+  time_ref: sntp_time
+  # Auto-fit square-card layout
+  #
+  # v1.22c (Fix #7): to test the panel UI at a smaller screen size
+  # (e.g. simulating a 4" or 2.8" panel on the same 7" Crowpanel
+  # hardware), edit these three lines:
+  #   - card_width  : shrink to fit one card per row (160 = 4" panel)
+  #   - screen_width: 480 (4") / 320 (2.8") / 240 (1.28")
+  #   - screen_height: 320 / 320 / 240
+  # The flex layout in ha_autopanel auto-reflows cards to the new
+  # width, so no other yaml change is needed. The 1024x600 values
+  # here are the 7" Crowpanel defaults; don't ship production with
+  # smaller numbers unless you're actually targeting a smaller
+  # panel.
+  card_width: 256 # change is intentional by Troy
+  card_gap: 8
+  screen_width: 1024
+  screen_height: 600
+  start_x: 0
+  start_y: 40
+  default_on_pct: 30
+  # AGENT_DEBUG: opt-in switch that exposes /autopanel/test/* HTTP
+  # endpoints (click, scroll, cmd, state) and /autopanel/screenshot.jpg.
+  # The test harness uses these to drive the panel without holding the
+  # serial port. Default in the component is false; flip to true in
+  # this test config so bft.py / run_tests.py can hit the test API.
+  # Production yml should leave it at the default.
+  agent_debug: true
+  # v1.22s: title bar knobs (test overrides for verification).
+  # Flip use_24h_time and weather_entity_id to verify the
+  # new features; the panel's stock yaml uses the default
+  # 12h time + weather.home (which 404s silently if the
+  # user's HA doesn't have a weather.home entity).
+  # use_24h_time: true
+  weather_entity_id: "weather.forecast_home"
+  # enable_stuck_task_recovery: defaults to false. The user
+  # wants visibility first, recovery second. The C6 reset
+  # GPIO (v1.22y) is wired in the C++ side but the knob
+  # stays off in this test yaml because the 5s eBlocked
+  # threshold fired on every boot during v1.22y testing -
+  # normal C6 init takes 5-10s. With the 30s threshold
+  # (v1.22z), the recovery is more conservative, but the
+  # default is still off. Flip to true to enable the
+  # graduated recovery sequence (log -> drop httpd worker
+  # priority -> C6 reset via GPIO32 -> App.reboot after
+  # 3 recoveries in a window).
+  # enable_stuck_task_recovery: true
 
 captive_portal:
