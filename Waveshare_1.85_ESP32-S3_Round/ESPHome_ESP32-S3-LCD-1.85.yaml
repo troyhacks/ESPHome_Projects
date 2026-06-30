@@ -1,3 +1,5 @@
+# WORKING ON MY HARDWARE
+
 substitutions:
   device_name: WaveShare_1.85_S3_Round
   build_root: C:/
@@ -104,7 +106,7 @@ time:
         pcf85063.write_time:
 psram:
   mode: octal
-  speed: 120MHz
+  # speed: 120MHz # 120MHz does not work on this device.
 
 
 sensor:
@@ -232,6 +234,7 @@ binary_sensor:
   - platform: gpio
     pin:
       number: GPIO0
+      ignore_strapping_warning: true
       mode: INPUT_PULLUP
       inverted: true
     name: "Boot Button"
@@ -305,7 +308,6 @@ spi:
   clk_pin: GPIO40
   data_pins: [GPIO46, GPIO45, GPIO42, GPIO41]
 
-
 touchscreen:
   platform: cst816
   id: my_touchscreen
@@ -324,24 +326,27 @@ touchscreen:
               touch.y_raw
               );
               
-# Display configuration - WORKING settings for 1.85C variant
+# Display configuration - WORKING settings for 1.85C variant (mipi_spi migration)
 display:
-  - platform: qspi_dbi
+  - platform: mipi_spi
     model: CUSTOM
-    data_rate: 80MHz
     id: main_display
-    rotation: 180°    # FLIP DISPLAY change to 180° to flip display
     spi_id: display_qspi
-    color_order: rgb
-    invert_colors: true
-    dimensions:
-      height: 360
-      width: 360
+    bus_mode: quad
     cs_pin: GPIO21
     reset_pin:
       pca9554: pca9554a_device
-      number: 2  # EXIO2 - critical for 1.85C variant!
-    auto_clear_enabled: false
+      number: 2
+      mode: { output: true }
+    dimensions:
+      width: 360
+      height: 360
+    color_order: rgb
+    invert_colors: true
+    pixel_mode: 16bit
+    rotation: 180
+    data_rate: 80MHz
+    buffer_size: 100%
     update_interval: never
     # Official Waveshare init sequence for 1.85C
     init_sequence:
@@ -527,9 +532,7 @@ display:
       - [0xD9, 0xAA]
       - [0xF3, 0x01]
       - [0xF0, 0x00]
-      # Color mode RGB565
-      - [0x3A, 0x55]
-      # MADCTL - Display orientation
+      # MADCTL - Display orientation (pixel_mode: 16bit handles 0x3A PIXFMT automatically)
       - [0x36, 0x00]
       # Column address (0-359)
       - [0x2A, 0x00, 0x00, 0x01, 0x67]
