@@ -28,7 +28,7 @@ esphome:
       - light.turn_on:
           id: back_light
           brightness: 1
-      - output.turn_on: amp_ctrl
+      # - output.turn_on: amp_ctrl
 
 esp32:
   variant: esp32p4
@@ -152,7 +152,7 @@ esp32_hosted:
   # fix avoided the secondary abort, but the underlying SDIO
   # wedge was still present. 10MHz is the documented workaround
   # for the SDIO link stability issue.
-  sdio_frequency: 10MHz
+  # sdio_frequency: 10MHz
 
 logger:
   hardware_uart: UART0 # alternatively, USB_SERIAL_JTAG
@@ -239,10 +239,10 @@ output:
     id: power_light
     pin: GPIO29
     inverted: true
-  - platform: gpio
-    id: amp_ctrl
-    pin: GPIO30
-    inverted: true
+  # - platform: gpio
+  #   id: amp_ctrl
+  #   pin: GPIO30
+  #   inverted: true
 
 light:
   - platform: monochromatic
@@ -255,24 +255,24 @@ light:
 http_request:
   id: ha_http
 
-i2s_audio:
-  - id: i2s_out
-    i2s_lrclk_pin: GPIO21
-    i2s_bclk_pin: GPIO22
-    i2s_mclk_pin: GPIO24
+# i2s_audio:
+#   - id: i2s_out
+#     i2s_lrclk_pin: GPIO21
+#     i2s_bclk_pin: GPIO22
+#     i2s_mclk_pin: GPIO24
 
-speaker:
-  - platform: i2s_audio
-    id: esp32_speaker
-    i2s_audio_id: i2s_out
-    dac_type: external
-    i2s_dout_pin: GPIO23
+# speaker:
+#   - platform: i2s_audio
+#     id: esp32_speaker
+#     i2s_audio_id: i2s_out
+#     dac_type: external
+#     i2s_dout_pin: GPIO23
 
-media_player:
-  - platform: speaker
-    name: "ESP32 Audio"
-    announcement_pipeline:
-      speaker: esp32_speaker
+# media_player:
+#   - platform: speaker
+#     name: "ESP32 Audio"
+#     announcement_pipeline:
+#       speaker: esp32_speaker
 
 touchscreen:
   - platform: gt911

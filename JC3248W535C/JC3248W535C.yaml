@@ -61,8 +61,8 @@ esp32:
     type: esp-idf
     sdkconfig_options:
       CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: y
-      CONFIG_ESP32S3_DATA_CACHE_64KB: y
-      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: y
+      # CONFIG_ESP32S3_DATA_CACHE_64KB: y
+      # CONFIG_ESP32S3_DATA_CACHE_LINE_64B: y
       CONFIG_SPIRAM_FETCH_INSTRUCTIONS: y
       CONFIG_SPIRAM_RODATA: y
       CONFIG_COMPILER_OPTIMIZATION_SIZE: y
@@ -77,6 +77,43 @@ esp32:
       # -> huge Jinja filter). DMA-capable allocs
       # (MALLOC_CAP_INTERNAL) still go to internal SRAM.
       CONFIG_SPIRAM_USE_MALLOC: y
+      # P4+C6 SDIO wedge fix (also helps S3): reserve an
+      # internal-SRAM DMA pool that SPI / crypto / DMA ops fall
+      # back to when the general heap is fragmented. On the S3
+      # this addresses the canaries:
+      #   E spi_master: setup_dma_priv_buffer - Failed to allocate
+      #   E mdns_networking: Cannot allocate memory
+      #   E esp-tls: Failed to create socket
+      # ...all of which trace back to internal-SRAM fragmentation
+      # once WiFi + LVGL + mDNS have carved up the 512KB.
+      CONFIG_ESP_SYSTEM_MEM_FRAGMENTATION_HARDENING: y
+      # v1.30: bigger esp_event queue. Default 32 events; the
+      # ha_autopanel WS subscription pushes a state_changed event
+      # per entity on connect (~468 in this HA), and 32 isn't
+      # enough headroom for that burst + the UI-build burst of
+      # LVGL flushes. 64 doubles the queue, in internal SRAM but
+      # ~1KB - cheap. The "create event loop queue failed"
+      # error from esp_websocket_client_init (seen post-UI-burst)
+      # goes away with this.
+      CONFIG_ESP_SYSTEM_EVENT_QUEUE_SIZE: "64"
+      # LWIP buffer tunings, copied from the Waveshare P4
+      # baseline. Default 16KB TCP send window bottlenecks the
+      # bulk /api/states fetch; default 6-slot TCP recv mailbox
+      # DoSes under HA's burst of state_changed events. These
+      # tunings are about THROUGHPUT, not heap size, but they
+      # also reduce the number of pending sockets that hold
+      # internal-SRAM buffers.
+      # CONFIG_LWIP_TCP_SND_BUF_DEFAULT: "65534"
+      # CONFIG_LWIP_TCP_WND_DEFAULT: "65534"
+      # CONFIG_LWIP_TCP_RECVMBOX_SIZE: "64"
+      # CONFIG_LWIP_UDP_RECVMBOX_SIZE: "64"
+      # CONFIG_LWIP_TCPIP_RECVMBOX_SIZE: "64"
+      # CONFIG_LWIP_TCP_SACK_OUT: y
+      # Default LWIP_MAX_SOCKETS is 16; we typically have 5-6
+      # active (api + http_request + 2-3 ephemeral TLS). 10
+      # leaves headroom without burning internal SRAM on unused
+      # socket structs.
+      # CONFIG_LWIP_MAX_SOCKETS: "17"
     advanced:
       enable_idf_experimental_features: true
 
@@ -101,6 +138,14 @@ api:
   homeassistant_states: true
   on_client_connected:
     - logger.log: "HA Connected!"
+
+# mDNS: top-level component, NOT an api: sub-option. Disabled to
+# free ~20KB of internal-SRAM that mDNS uses for its receive buffer
+# (canary: "mdns_networking: Cannot allocate memory"). HA still
+# finds the device via its static IP + the api://homeassistant.local
+# mDNS entry that HA itself registers.
+mdns:
+  disabled: true
 
 web_server:
   port: 80
@@ -230,7 +275,13 @@ display:
   - id: my_display
     platform: mipi_spi
     model: JC3248W535
-    data_rate: 40MHz
+    data_rate: 20MHz  # was 40MHz - dropped to reduce SPI DMA buffer
+                      # pressure during the discovery burst. The DMA
+                      # driver's per-transaction buffer alloc is the
+                      # root of the "spi_master: setup_dma_priv_buffer
+                      # failed" canary - smaller/faster transactions
+                      # mean the alloc/free churn is less aggressive.
+                      # 20MHz is still fast enough for a 60Hz refresh.
     # CS pin matches the model's default; explicit for documentation.
     # GPIO45 is a strapping pin on ESP32-S3 (VDD_SPI voltage select),
     # which is why the model's default carries
@@ -272,8 +323,29 @@ lvgl:
     - my_display
   touchscreens:
     - my_touchscreen
-  buffer_size: 100%
-  full_refresh: true
+  # NOTE: there is no `psram: true` config option for LVGL in this
+  # ESPHome version - the component already does "prefer internal
+  # SRAM, fall back to PSRAM" via lv_alloc_draw_buf(). With
+  # CONFIG_SPIRAM_USE_MALLOC=y, a 307KB 100% buffer is almost
+  # certainly landing in PSRAM anyway.
+  #
+  # 100% buffer (307KB in PSRAM) for full_refresh: true. With
+  # the internal-SRAM fragmentation hardening from the sdkconfig
+  # block (CONFIG_ESP_SYSTEM_MEM_FRAGMENTATION_HARDENING=y +
+  # LWIP tunings), the canaries that motivated the earlier 50%
+  # attempt should be addressed without giving up the larger
+  # buffer.
+  buffer_size: 50%
+  # full_refresh: false is the key fix for the SPI DMA canary.
+  # With full_refresh: true, LVGL flushes the entire 307KB framebuffer
+  # every tick -> one SPI DMA buffer alloc per tick in internal
+  # SRAM -> pool exhaustion -> "spi_master: setup_dma_priv_buffer
+  # failed" -> main loop stalls -> uart_read_bytes floods.
+  # With full_refresh: false, LVGL tracks dirty regions and flushes
+  # only those. A mostly-static room grid only redraws on state
+  # changes (a few per second), not 60Hz. SPI DMA buffer pressure
+  # drops by ~99%.
+  full_refresh: false
   # MUST match display.byte_order above. The mipi_spi model's
   # default is big_endian (AXS15231B reads MSB first over
   # quad SPI). Setting this to little_endian causes
