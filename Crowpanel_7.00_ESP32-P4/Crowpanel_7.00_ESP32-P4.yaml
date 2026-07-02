@@ -52,13 +52,6 @@ esp32:
     # sdkconfig option on every build.
     sdkconfig_options:
       CONFIG_ESP_TASK_WDT_TIMEOUT_S: "30"
-      # v1.22u: WiFi RMT (Radio Mgmt Task) buffer + AMPDU
-      # tuning for the ESP32-C6 wifi co-processor. The
-      # defaults limit throughput on the P4 + C6 link.
-      # Bumping static to 16 and dynamic to 64/64 + 32-
-      # station BA windows matches the vendor IDF examples
-      # for similar 7-10" panel workloads and has been
-      # stable in Crowpanel testing.
       CONFIG_WIFI_RMT_STATIC_RX_BUFFER_NUM: "16"
       CONFIG_WIFI_RMT_DYNAMIC_RX_BUFFER_NUM: "64"
       CONFIG_WIFI_RMT_DYNAMIC_TX_BUFFER_NUM: "64"
@@ -66,11 +59,6 @@ esp32:
       CONFIG_WIFI_RMT_TX_BA_WIN: "32"
       CONFIG_WIFI_RMT_AMPDU_RX_ENABLED: y
       CONFIG_WIFI_RMT_RX_BA_WIN: "32"
-      # v1.22u: LWIP TCP buffer tuning. The default TCP
-      # send window (16KB) is the bottleneck for the live
-      # state-poll bulk /api/states fetch (200KB+). The
-      # default TCP receive mailbox (6) DoSes when HA
-      # pushes 200+ entity state_changed events in a burst.
       CONFIG_LWIP_TCP_SND_BUF_DEFAULT: "65534"
       CONFIG_LWIP_TCP_WND_DEFAULT: "65534"
       CONFIG_LWIP_TCP_RECVMBOX_SIZE: "64"
@@ -83,7 +71,7 @@ esp32:
       CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK: y
       CONFIG_ESP_SYSTEM_MEM_FRAGMENTATION_HARDENING: y
       CONFIG_SPIRAM_USE_MALLOC: y
-      # HACKS?!?!?
+      # WIP testing hacks - but seems to make things work!
       CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "0"
       CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP: y
       CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY: y

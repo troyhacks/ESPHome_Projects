@@ -14,38 +14,17 @@
 #  not required to bring up the panel.)
 
 substitutions:
-  device_name: waveshare-p4-10-min
+  device_name: waveshare-p4-10-min # Needs to be lowecase
   build_root: C:/
+  pio_core_dir: pio_core_dir   # shared PIO cache (not per-device)
 
 esphome:
   name: ${device_name}
   friendly_name: ${device_name}
-  # build_path at C:/esphome_td2 is OUTSIDE the project so the
-  # absolute paths to the source files are short - the linker
-  # command line on Windows can otherwise exceed the 32k char
-  # CreateProcess limit ("command line too long" error from
-  # idf.py at link time). The recommended fix is
-  # `-Wl,--use-response-file` but that requires patching the
-  # IDF build system, not exposed via ESPHome YAML. Keeping
-  # the build path short works around it. The dependency-
-  # resolution step also runs `git rev-parse` to find the
-  # project version; we ran into 'fatal: not a git repository'
-  # errors when the project is heavy on add_idf_component()
-  # calls. C:/esphome_td2 is set up as a permanent git repo by
-  # ./bootstrap-build.ps1 in the Crowpanel project - run that
-  # script (not `git init` by hand) if the IDF ever says the
-  # build dir is not a git repo.
-  #
-  # v2: build_path is now per-device (${build_root}/${device_name}) so
-  # multiple devices can compile in parallel without trampling each
-  # other's .pioenvs. Substitution scope is built from the
-  # `substitutions:` block + CLI overrides only -- `name` is NOT
-  # auto-seeded, which is why we have `device_name` here as the
-  # single source of truth.
   build_path: ${build_root}/${device_name}
   environment_variables:
     PLATFORMIO_WORKSPACE_DIR: "${build_root}/${device_name}"
-    PLATFORMIO_CORE_DIR: "${build_root}/${device_name}"
+    PLATFORMIO_CORE_DIR:      "${build_root}/${pio_core_dir}"
   min_version: 2026.1.0
   on_boot:
     priority: -1000
@@ -67,25 +46,8 @@ esp32:
     type: esp-idf
     advanced:
       enable_idf_experimental_features: true
-    # v1.22q: bump the IDF freeRTOS task watchdog (TWDT)
-    # timeout from 5s (default) to 30s. The 5s default is
-    # too aggressive for the P4 + ESP32-C6 wifi co-processor
-    # setup - the SDIO link occasionally takes 6-8 seconds
-    # to recover from a transient. With a 5s timeout, any
-    # wifi hiccup trips the TWDT and the panel reboots
-    # itself (rst:0xc SW_CPU_RESET). 30s gives the SDIO
-    # driver plenty of slack while still catching real
-    # hangs. This is idempotent: ESPHome re-emits the
-    # sdkconfig option on every build.
     sdkconfig_options:
       CONFIG_ESP_TASK_WDT_TIMEOUT_S: "30"
-      # v1.22u: WiFi RMT (Radio Mgmt Task) buffer + AMPDU
-      # tuning for the ESP32-C6 wifi co-processor. The
-      # defaults limit throughput on the P4 + C6 link.
-      # Bumping static to 16 and dynamic to 64/64 + 32-
-      # station BA windows matches the vendor IDF examples
-      # for similar 7-10" panel workloads and has been
-      # stable in Crowpanel testing.
       CONFIG_WIFI_RMT_STATIC_RX_BUFFER_NUM: "16"
       CONFIG_WIFI_RMT_DYNAMIC_RX_BUFFER_NUM: "64"
       CONFIG_WIFI_RMT_DYNAMIC_TX_BUFFER_NUM: "64"
@@ -93,60 +55,28 @@ esp32:
       CONFIG_WIFI_RMT_TX_BA_WIN: "32"
       CONFIG_WIFI_RMT_AMPDU_RX_ENABLED: y
       CONFIG_WIFI_RMT_RX_BA_WIN: "32"
-      # v1.22u: LWIP TCP buffer tuning. The default TCP
-      # send window (16KB) is the bottleneck for the live
-      # state-poll bulk /api/states fetch (200KB+). The
-      # default TCP receive mailbox (6) DoSes when HA
-      # pushes 200+ entity state_changed events in a burst.
       CONFIG_LWIP_TCP_SND_BUF_DEFAULT: "65534"
       CONFIG_LWIP_TCP_WND_DEFAULT: "65534"
       CONFIG_LWIP_TCP_RECVMBOX_SIZE: "64"
       CONFIG_LWIP_UDP_RECVMBOX_SIZE: "64"
       CONFIG_LWIP_TCPIP_RECVMBOX_SIZE: "64"
       CONFIG_LWIP_TCP_SACK_OUT: y
-      # v1.25c7+: enable FreeRTOS trace facility. Required
-      # for uxTaskGetSystemState() (the WLED-style task
-      # monitor's pre-crash state walk).
       CONFIG_FREERTOS_USE_TRACE_FACILITY: y
-      # Keeps the panic handler in IRAM so it can run even
-      # if the main flash/PSRAM is wedged.
       CONFIG_ESP32_PANIC_HANDLER_IRAM: y
-      # Prints the interrupt context in the task-dump on
-      # panic.
       CONFIG_FREERTOS_INTERRUPT_BACKTRACE: y
-      # Catches stack overflow at the precise byte, which
-      # makes it obvious which task is over-running.
       CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK: y
-      # P4+C6 SDIO wedge fix: reserve an internal-SRAM DMA
-      # pool so the SDIO driver can always satisfy
-      # sdio_push_data_to_queue's buffer alloc even when
-      # the general heap is fragmented. The sdio assert at
-      # sdio_drv.c:896 / 928 was firing ~20s into boot
-      # because tlsf_malloc couldn't find a contiguous
-      # DMA-capable slot for an inbound RPC packet. The
-      # hardening mode carves out a reserved pool that
-      # SDIO / crypto / DMA ops can fall back to.
       CONFIG_ESP_SYSTEM_MEM_FRAGMENTATION_HARDENING: y
-      # v1.28: route malloc() to PSRAM. P4 hex-mode PSRAM at
-      # 200MHz is comfortably fast for heap traffic (no
-      # perceptible UI or parse slowdown on the 25KB aggregate
-      # JSON). The payoff: every default-allocator allocation
-      # - std::string temporaries in ArduinoJson's
-      # JsonDeserializer::parseObject, std::string copies
-      # from as<std::string>(), the small std::strings in
-      # Entity::state before we migrated to psram_string,
-      # etc. - lands in PSRAM instead of the 384KB internal
-      # heap. With this on, the cxx_exception_stubs aborts
-      # from internal-RAM OOM in std::bad_alloc go away
-      # without us having to convert every remaining
-      # std::string field in ha_autopanel. DMA-capable
-      # allocations stay in internal SRAM because they
-      # explicitly request MALLOC_CAP_INTERNAL via
-      # heap_caps_malloc, which this option doesn't change.
-      # See project_psram_allocator_naming and the
-      # arduinojson.org/v7/how-to/use-external-ram-on-esp32
-      # writeup.
       CONFIG_SPIRAM_USE_MALLOC: y
+      # WIP testing hacks - but seems to make things work!
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "0"
+      CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP: y
+      CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY: y
+      CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY: y
+      CONFIG_SPIRAM_XIP_FROM_PSRAM: y
+      CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY: y
+      CONFIG_SPIRAM_ALLOW_DATA_SEG_EXTERNAL_MEMORY: y
+      CONFIG_SPIRAM_ALLOW_RODATA_SEG_EXTERNAL_MEMORY: y
+      CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM: y
 
 psram:
   mode: hex
