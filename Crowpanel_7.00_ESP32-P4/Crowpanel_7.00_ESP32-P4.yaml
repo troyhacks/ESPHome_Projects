@@ -77,49 +77,22 @@ esp32:
       CONFIG_LWIP_UDP_RECVMBOX_SIZE: "64"
       CONFIG_LWIP_TCPIP_RECVMBOX_SIZE: "64"
       CONFIG_LWIP_TCP_SACK_OUT: y
-      # v1.25c7+: enable FreeRTOS trace facility. Required
-      # for uxTaskGetSystemState() (the WLED-style task
-      # monitor's pre-crash state walk).
       CONFIG_FREERTOS_USE_TRACE_FACILITY: y
-      # Keeps the panic handler in IRAM so it can run even
-      # if the main flash/PSRAM is wedged.
       CONFIG_ESP32_PANIC_HANDLER_IRAM: y
-      # Prints the interrupt context in the task-dump on
-      # panic.
       CONFIG_FREERTOS_INTERRUPT_BACKTRACE: y
-      # Catches stack overflow at the precise byte, which
-      # makes it obvious which task is over-running.
       CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK: y
-      # P4+C6 SDIO wedge fix: reserve an internal-SRAM DMA
-      # pool so the SDIO driver can always satisfy
-      # sdio_push_data_to_queue's buffer alloc even when
-      # the general heap is fragmented. The sdio assert at
-      # sdio_drv.c:896 / 928 was firing ~20s into boot
-      # because tlsf_malloc couldn't find a contiguous
-      # DMA-capable slot for an inbound RPC packet. The
-      # hardening mode carves out a reserved pool that
-      # SDIO / crypto / DMA ops can fall back to.
       CONFIG_ESP_SYSTEM_MEM_FRAGMENTATION_HARDENING: y
-      # v1.28: route malloc() to PSRAM. P4 hex-mode PSRAM at
-      # 200MHz is comfortably fast for heap traffic (no
-      # perceptible UI or parse slowdown on the 25KB aggregate
-      # JSON). The payoff: every default-allocator allocation
-      # - std::string temporaries in ArduinoJson's
-      # JsonDeserializer::parseObject, std::string copies
-      # from as<std::string>(), the small std::strings in
-      # Entity::state before we migrated to psram_string,
-      # etc. - lands in PSRAM instead of the 384KB internal
-      # heap. With this on, the cxx_exception_stubs aborts
-      # from internal-RAM OOM in std::bad_alloc go away
-      # without us having to convert every remaining
-      # std::string field in ha_autopanel. DMA-capable
-      # allocations stay in internal SRAM because they
-      # explicitly request MALLOC_CAP_INTERNAL via
-      # heap_caps_malloc, which this option doesn't change.
-      # See project_psram_allocator_naming and the
-      # arduinojson.org/v7/how-to/use-external-ram-on-esp32
-      # writeup.
       CONFIG_SPIRAM_USE_MALLOC: y
+      # HACKS?!?!?
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "0"
+      CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP: y
+      CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY: y
+      CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY: y
+      CONFIG_SPIRAM_XIP_FROM_PSRAM: y
+      CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY: y
+      CONFIG_SPIRAM_ALLOW_DATA_SEG_EXTERNAL_MEMORY: y
+      CONFIG_SPIRAM_ALLOW_RODATA_SEG_EXTERNAL_MEMORY: y
+      CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM: y
 
 psram:
   speed: 200MHz
@@ -132,27 +105,23 @@ esp_ldo:
 
 esp32_hosted:
   variant: esp32c6
+  bus_width: 1      # 1-bit SDIO bus (4-bit bus is unstable on some P4 boards)
   active_high: true
   reset_pin: GPIO32
   cmd_pin: GPIO19
   clk_pin: GPIO18
   d0_pin: GPIO14
-  d1_pin: GPIO15
-  d2_pin: GPIO16
-  d3_pin: GPIO17
-  # v1.22x: lower SDIO frequency 20MHz -> 10MHz. The default
-  # 20MHz causes sdio_rx_get_buffer() to assert in sdio_drv.c:896
-  # (*buf == NULL) when the host drains the SDIO ring buffer
-  # too slowly during a 200KB+ bulk /api/states transfer. The
-  # buffer pool is drained by the httpd task (which is also
-  # parsing JSON + allocating), and at 20MHz the C6 outpaces
-  # the drain. 10MHz gives the host ~2x more time per buffer
-  # without any code change. v1.22v on this hardware survived
-  # the same transfer with the 20MHz default; v1.22w's std::function
-  # fix avoided the secondary abort, but the underlying SDIO
-  # wedge was still present. 10MHz is the documented workaround
-  # for the SDIO link stability issue.
-  # sdio_frequency: 10MHz
+  d1_pin: GPIO15 # redundant for 1-bit bus, but left for 4-bit testing.
+  d2_pin: GPIO16 # redundant for 1-bit bus, but left for 4-bit testing.
+  d3_pin: GPIO17 # redundant for 1-bit bus, but left for 4-bit testing.
+  # sdio_frequency: 10MHz # commented out for default
+
+update:
+  - platform: esp32_hosted
+    id: esp32_hosted_update
+    type: http
+    name: "C6 Coprocessor Update"
+    source: https://esphome.github.io/esp-hosted-firmware/manifest/esp32c6.json
 
 logger:
   hardware_uart: UART0 # alternatively, USB_SERIAL_JTAG
